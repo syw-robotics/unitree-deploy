@@ -1,0 +1,26 @@
+lowstate_topic: rt/lowstate
+odom_topic: rt/odommodestate
+use_odom: true
+
+initial_base:
+  pos: [0.0, 0.0, 0.445]
+  quat: [1.0, 0.0, 0.0, 0.0]
+
+# Order of LowState.motor_state for Unitree quadrupeds.
+state_joint_names:
+  - FR_hip_joint
+  - FR_thigh_joint
+  - FR_calf_joint
+  - FL_hip_joint
+  - FL_thigh_joint
+  - FL_calf_joint
+  - RR_hip_joint
+  - RR_thigh_joint
+  - RR_calf_joint
+  - RL_hip_joint
+  - RL_thigh_joint
+  - RL_calf_joint
+
+enable_cameras: false
+show_camera_frustums: true
+cameras: []
