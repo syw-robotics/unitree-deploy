@@ -17,14 +17,37 @@ uv pip install -e .
 
 # 启动
 真机控制：
-`uv run python unitree-deploy/controller.py --mode real --net <跑策略的网卡名> --deploy-yaml unitree-deploy/loco_flat/controller.yaml`
+`python controller.py --mode real --net <跑策略的网卡名> --ckpt ckpt/g1/loco_flat`
 
 仿真控制：
-`uv run python unitree-deploy/sim_bridge.py`
-`uv run python unitree-deploy/controller.py --mode sim --deploy-yaml unitree-deploy/loco_flat/controller.yaml`
+`python sim_bridge.py --robot g1`
+`python controller.py --mode sim --ckpt ckpt/g1/loco_flat`
 
 状态可视化：
-`uv run python unitree-deploy/visualizer.py --mode sim`
+`python visualizer.py --mode sim --robot g1`
+
+## 多机器人模型
+MuJoCo 模型按机器人分目录放置：
+```
+unitree-deploy/robot_model/<robot>/<robot>.xml
+```
+
+例如 `--robot g1` 会加载 `robot_model/g1/g1.xml`。如果 XML 文件名不符合这个约定，可以用 `--model-xml <path>` 覆盖：
+`python sim_bridge.py --robot g1 --model-xml robot_model/g1/g1.xml`
+
+## Checkpoint 目录
+策略和控制配置按机器人、策略名分目录放置：
+```
+unitree-deploy/ckpt/<robot>/<policy>/
+├── controller.yaml
+├── policy.yaml
+├── policy.onnx
+└── exported-deploy.yaml
+```
+
+当前 G1 平地策略位于 `ckpt/g1/loco_flat/`。
+
+`controller.py` 不直接依赖 MuJoCo XML，关节数量和顺序从 `--ckpt` 目录里的 `controller.yaml` / `policy.yaml` 推导。新机器人或新策略需要准备对应 checkpoint 目录，并在 `controller.yaml` 中维护 `robot`、`real_joint_names`、`mujoco_joint_names`、`isaac_joint_names_state` 和增益。
 
 ## 控制器状态机
 `controller.py` 有 4 个状态：

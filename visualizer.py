@@ -2,22 +2,17 @@ import argparse
 import time
 from dataclasses import dataclass
 
+import mujoco
+import numpy as np
+import viser
+from robot_config import DEFAULT_ROBOT, RobotModel, load_robot_model
+from scene_config import RealSenseCameraConfig, StandaloneMujocoScene
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py.core.channel import ChannelSubscriber
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
+from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 from unitree_sdk2py.utils.thread import RecurrentThread
 
-import numpy as np
-
-import mujoco
-
-from scene_config import RealSenseCameraConfig, StandaloneMujocoScene
-import viser
-
-from pathlib import Path
-
-MODEL = Path(__file__).parent / "robot_model" / "g1.xml"
 DEFAULT_MODE = "sim"
 DEFAULT_ENABLE_CAMERA = False
 DEFAULT_REALSENSE_SERIAL = "140122071098"
@@ -33,12 +28,13 @@ DEFAULT_ODOMSTATE_TOPIC = "rt/odommodestate"
 
 @dataclass(frozen=True)
 class RuntimeConfig:
+    robot: RobotModel
     mode: str
     net: str | None
     enable_camera: bool
 
 
-class G1StateVisualizer:
+class RobotStateVisualizer:
     def __init__(self, config: RuntimeConfig):
         self.config = config
         self.low_state = None
@@ -54,7 +50,7 @@ class G1StateVisualizer:
         self._closed = False
 
     def Init(self):
-        self.model = mujoco.MjModel.from_xml_path(str(MODEL))
+        self.model = mujoco.MjModel.from_xml_path(str(self.config.robot.xml_path))
         self.data = mujoco.MjData(self.model)
         self.data.qpos[:] = np.zeros(self.model.nq)
         self.data.qpos[2] = 1.0
@@ -145,8 +141,10 @@ class G1StateVisualizer:
 
 
 def parse_args() -> RuntimeConfig:
-    parser = argparse.ArgumentParser(description="G1 state visualizer for real robot or simulation.")
-    parser.add_argument("--net", default='lo', help="Optional DDS network interface.")
+    parser = argparse.ArgumentParser(description="Robot state visualizer for real robot or simulation.")
+    parser.add_argument("--robot", default=DEFAULT_ROBOT, help="Robot folder under robot_model/.")
+    parser.add_argument("--model-xml", help="Override robot XML path.")
+    parser.add_argument("--net", default="lo", help="Optional DDS network interface.")
     parser.add_argument(
         "--mode",
         choices=("real", "sim"),
@@ -161,12 +159,14 @@ def parse_args() -> RuntimeConfig:
     )
     args = parser.parse_args()
     return RuntimeConfig(
+        robot=load_robot_model(args.robot, args.model_xml),
         mode=args.mode,
         net=args.net,
         enable_camera=bool(args.camera),
     )
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     config = parse_args()
 
     if config.net:
@@ -174,7 +174,7 @@ if __name__ == '__main__':
     else:
         ChannelFactoryInitialize(0)
 
-    visualizer = G1StateVisualizer(config)
+    visualizer = RobotStateVisualizer(config)
     try:
         visualizer.Init()
         visualizer.Start()
