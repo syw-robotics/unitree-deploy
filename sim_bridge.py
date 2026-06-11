@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import mujoco
 import mujoco.viewer
 import numpy as np
-from robot_config import DEFAULT_ROBOT, RobotModel, load_robot_model
+from robot_config import DEFAULT_ROBOT, DEFAULT_TERRAIN, RobotModel, load_robot_model
 from sshkeyboard import listen_keyboard, stop_listening
 from unitree_sdk2py.core.channel import (
     ChannelFactoryInitialize,
@@ -36,11 +36,13 @@ STATE_HZ = 200
 RENDER_HZ = 30
 BASE_HEIGHT = 1.0
 BASE_QUAT = np.array([0.70710678, 0.0, 0.0, 0.70710678], dtype=np.float64)
+GYRO_SENSOR_NAMES = ("imu_ang_vel", "imu_gyro")
+ACC_SENSOR_NAMES = ("imu_lin_acc", "imu_acc")
 
 BAND_SITES = ("left_gantry_attach_point", "right_gantry_attach_point")
-BAND_CLEARANCE = 0.35
-BAND_STIFFNESS = 550.0
-BAND_DAMPING = 45.0
+BAND_CLEARANCE = 0.10
+BAND_STIFFNESS = 400.0
+BAND_DAMPING = 40.0
 BAND_STEP = 0.1
 BAND_MIN_Z = 0.8
 BAND_MAX_Z = 2.2
@@ -89,6 +91,13 @@ def quat_to_rpy(q: np.ndarray) -> list[float]:
 
 
 class SimBridge:
+    """MuJoCo <-> Unitree DDS bridge used for sim2sim validation.
+
+    Data flow:
+      LowCmd -> MuJoCo PD control -> physics step -> LowState/Odom DDS topics
+      keyboard -> wireless_remote bytes and optional suspension-band controls
+    """
+
     def __init__(self, config: RuntimeConfig):
         self.config = config
         self.alive = True
@@ -108,6 +117,7 @@ class SimBridge:
         self.model.opt.timestep = 1.0 / SIM_HZ
         self.data = mujoco.MjData(self.model)
         self.num_motor = int(self.model.nu)
+        # Actuator ctrlrange is the final safety clamp before writing data.ctrl.
         self.ctrl_lower = self.model.actuator_ctrlrange[:, 0].copy()
         self.ctrl_upper = self.model.actuator_ctrlrange[:, 1].copy()
 
@@ -123,12 +133,24 @@ class SimBridge:
         self.motor_enable = np.zeros(self.num_motor, dtype=bool)
         self.ctrl = np.zeros(self.num_motor, dtype=np.float64)
 
-        self.imu_gyro = self.sensor_slice("imu_ang_vel", required=False)
-        self.imu_acc = self.sensor_slice("imu_lin_acc", required=True)
+        self.imu_gyro = self.sensor_slice(
+            GYRO_SENSOR_NAMES,
+            mujoco.mjtSensor.mjSENS_GYRO,
+            label="IMU gyro",
+            required=False,
+        )
+        self.imu_acc = self.sensor_slice(
+            ACC_SENSOR_NAMES,
+            mujoco.mjtSensor.mjSENS_ACCELEROMETER,
+            label="IMU accelerometer",
+            required=False,
+        )
         self.crc = CRC()
 
-        self.band_on = self.config.band_enabled and bool(self.config.band_sites)
-        self.band_site_ids = [self.site_id(name) for name in self.config.band_sites] if self.band_on else []
+        self.band_site_ids = (
+            self.site_ids(self.config.band_sites) if self.config.band_enabled else []
+        )
+        self.band_on = self.config.band_enabled and bool(self.band_site_ids)
         self.band_jacp = np.zeros((3, self.model.nv), dtype=np.float64)
         self.band_zero = np.zeros(3, dtype=np.float64)
         self.band_anchors = self.make_band_anchors()
@@ -149,32 +171,71 @@ class SimBridge:
         signal.signal(signal.SIGINT, self.close)
         signal.signal(signal.SIGTERM, self.close)
 
-    def sensor_slice(self, name: str, required: bool):
-        sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, name)
-        if sid < 0:
-            if required:
-                raise ValueError(f"MuJoCo XML missing required sensor: {name}")
-            return None
+    # ----- MuJoCo model lookup helpers -----
+
+    def sensor_slice_by_id(self, sid: int, label: str, required: bool):
         adr = int(self.model.sensor_adr[sid])
         dim = int(self.model.sensor_dim[sid])
         if required and dim < 3:
-            raise ValueError(f"MuJoCo sensor {name} must have dim >= 3")
+            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_SENSOR, sid)
+            raise ValueError(f"MuJoCo {label} sensor {name} must have dim >= 3")
+        if dim < 3:
+            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_SENSOR, sid)
+            log(f"ignoring {label} sensor {name}: dim={dim} < 3")
+            return None
         return adr, dim
 
-    def site_id(self, name: str) -> int:
-        site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, name)
-        if site_id < 0:
-            raise ValueError(f"MuJoCo XML missing required site: {name}")
-        return int(site_id)
+    def sensor_slice(
+        self,
+        names: tuple[str, ...],
+        sensor_type: mujoco.mjtSensor,
+        label: str,
+        required: bool,
+    ):
+        for name in names:
+            sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, name)
+            if sid >= 0:
+                return self.sensor_slice_by_id(int(sid), label, required)
+
+        for sid in range(self.model.nsensor):
+            if int(self.model.sensor_type[sid]) == int(sensor_type):
+                return self.sensor_slice_by_id(int(sid), label, required)
+
+        if required:
+            raise ValueError(
+                f"MuJoCo XML missing required {label} sensor; tried names: {', '.join(names)}"
+            )
+        log(f"MuJoCo XML has no {label} sensor; using fallback data")
+        return None
+
+    def site_ids(self, names: tuple[str, ...]) -> list[int]:
+        site_ids = []
+        missing = []
+        for name in names:
+            site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, name)
+            if site_id < 0:
+                missing.append(name)
+            else:
+                site_ids.append(int(site_id))
+
+        if missing:
+            log(f"MuJoCo XML missing suspension band site(s), skipping: {', '.join(missing)}")
+        if names and not site_ids:
+            log("suspension bands disabled for this XML")
+        return site_ids
+
+    # ----- Reset and suspension-band setup -----
 
     def make_band_anchors(self) -> np.ndarray:
-        anchors = []
+        if not self.band_site_ids:
+            return np.zeros((0, 3), dtype=np.float64)
+
+        anchors = np.zeros((len(self.band_site_ids), 3), dtype=np.float64)
         mujoco.mj_forward(self.model, self.data)
-        for site_id in self.band_site_ids:
-            anchor = self.data.site_xpos[site_id].copy()
-            anchor[2] += BAND_CLEARANCE
-            anchors.append(anchor)
-        return np.asarray(anchors, dtype=np.float64)
+        for i, site_id in enumerate(self.band_site_ids):
+            anchors[i] = self.data.site_xpos[site_id]
+            anchors[i, 2] += BAND_CLEARANCE
+        return anchors
 
     def reset_sim(self, print_log: bool = True) -> None:
         mujoco.mj_resetData(self.model, self.data)
@@ -200,6 +261,8 @@ class SimBridge:
         if print_log:
             log("reset robot state to initial pose")
 
+    # ----- DDS input: LowCmd from controller.py -----
+
     def on_lowcmd(self, msg: LowCmd_) -> None:
         if msg is None:
             return
@@ -217,6 +280,8 @@ class SimBridge:
                 self.tau_ff[i] = float(cmd.tau)
                 self.motor_enable[i] = int(getattr(cmd, "mode", 1)) != 0
             self.command_received = True
+
+    # ----- Keyboard controls and virtual wireless remote -----
 
     def keyboard_loop(self) -> None:
         log(
@@ -267,23 +332,28 @@ class SimBridge:
         log(f"band height -> {self.band_z:.3f} m")
 
     def remote_bytes(self) -> list[int]:
-        remote = [0] * 40
+        remote = bytearray(40)
         with self.keys_lock:
             keys = set(self.keys)
 
-        sticks = (
-            STICK * ("a" in keys) - STICK * ("d" in keys),
-            STICK * ("q" in keys) - STICK * ("e" in keys),
-            0.0,
-            STICK * ("w" in keys) - STICK * ("s" in keys),
-        )
-        for offset, value in zip((4, 8, 12, 20), sticks):
-            remote[offset : offset + 4] = struct.pack("<f", value)
+        # Match Unitree wireless_remote layout consumed by controller.RemoteCommand.
+        for offset, value in zip(
+            (4, 8, 12, 20),
+            (
+                STICK * ("a" in keys) - STICK * ("d" in keys),
+                STICK * ("q" in keys) - STICK * ("e" in keys),
+                0.0,
+                STICK * ("w" in keys) - STICK * ("s" in keys),
+            ),
+        ):
+            struct.pack_into("<f", remote, offset, value)
 
         for key, (byte_i, bit_i) in REMOTE_BUTTONS.items():
             if key in keys:
                 remote[byte_i] |= 1 << bit_i
-        return remote
+        return list(remote)
+
+    # ----- Physics step helpers -----
 
     def apply_band(self) -> None:
         if not self.band_on:
@@ -308,6 +378,7 @@ class SimBridge:
             )
 
     def compute_ctrl(self) -> np.ndarray:
+        # PD target arrays are written by the DDS callback; this runs inside the MuJoCo step loop.
         q = self.data.qpos[7 : 7 + self.num_motor]
         dq = self.data.qvel[6 : 6 + self.num_motor]
         with self.cmd_lock:
@@ -320,7 +391,9 @@ class SimBridge:
         np.clip(self.ctrl, self.ctrl_lower, self.ctrl_upper, out=self.ctrl)
         return self.ctrl
 
-    def snapshot(self):
+    # ----- DDS output: simulated robot state -----
+
+    def state_snapshot(self):
         with self.lock:
             qpos = self.data.qpos.copy()
             qvel = self.data.qvel.copy()
@@ -332,9 +405,20 @@ class SimBridge:
             adr, dim = self.imu_gyro
             if dim >= 3:
                 gyro = sensordata[adr : adr + 3]
-        acc_adr, _ = self.imu_acc
-        acc = sensordata[acc_adr : acc_adr + 3]
+        acc = np.zeros(3, dtype=np.float64)
+        if self.imu_acc is not None:
+            acc_adr, dim = self.imu_acc
+            if dim >= 3:
+                acc = sensordata[acc_adr : acc_adr + 3]
         return qpos, qvel, ctrl, gyro, acc
+
+    @staticmethod
+    def fill_imu(msg, quat, gyro, acc) -> None:
+        msg.imu_state.quaternion = quat.tolist()
+        msg.imu_state.gyroscope = gyro.tolist()
+        msg.imu_state.accelerometer = acc.tolist()
+        if hasattr(msg.imu_state, "rpy"):
+            msg.imu_state.rpy = quat_to_rpy(quat)
 
     def make_lowstate(self, qpos, qvel, ctrl, gyro, acc) -> LowState_:
         msg = unitree_hg_msg_dds__LowState_()
@@ -347,12 +431,7 @@ class SimBridge:
             msg.motor_state[i].dq = float(qvel[6 + i])
             msg.motor_state[i].tau_est = float(ctrl[i])
 
-        quat = qpos[3:7]
-        msg.imu_state.quaternion = quat.tolist()
-        msg.imu_state.gyroscope = gyro.tolist()
-        msg.imu_state.accelerometer = acc.tolist()
-        if hasattr(msg.imu_state, "rpy"):
-            msg.imu_state.rpy = quat_to_rpy(quat)
+        self.fill_imu(msg, qpos[3:7], gyro, acc)
         msg.wireless_remote = self.remote_bytes()
         msg.crc = self.crc.Crc(msg)
 
@@ -361,25 +440,22 @@ class SimBridge:
 
     def make_odom(self, qpos, qvel, gyro, acc) -> SportModeState_:
         msg = unitree_go_msg_dds__SportModeState_()
-        quat = qpos[3:7]
         msg.position = qpos[:3].tolist()
         msg.velocity = qvel[:3].tolist()
         msg.body_height = float(qpos[2])
         msg.yaw_speed = float(gyro[2])
-        msg.imu_state.quaternion = quat.tolist()
-        msg.imu_state.gyroscope = gyro.tolist()
-        msg.imu_state.accelerometer = acc.tolist()
-        if hasattr(msg.imu_state, "rpy"):
-            msg.imu_state.rpy = quat_to_rpy(quat)
+        self.fill_imu(msg, qpos[3:7], gyro, acc)
         return msg
 
     def publish_state_loop(self) -> None:
         timer = LoopTimer(STATE_HZ)
         while self.alive:
-            qpos, qvel, ctrl, gyro, acc = self.snapshot()
+            qpos, qvel, ctrl, gyro, acc = self.state_snapshot()
             self.lowstate_pub.Write(self.make_lowstate(qpos, qvel, ctrl, gyro, acc))
             self.odom_pub.Write(self.make_odom(qpos, qvel, gyro, acc))
             timer.sleep()
+
+    # ----- Viewer, simulation loop, and cleanup -----
 
     def sync_viewer(self) -> bool:
         if self.viewer is None:
@@ -419,7 +495,10 @@ class SimBridge:
             timer.sleep()
 
     def run(self) -> None:
-        log(f"robot={self.config.robot.name} model={self.config.robot.xml_path}")
+        log(
+            f"robot={self.config.robot.name} terrain={self.config.robot.terrain} "
+            f"model={self.config.robot.xml_path}"
+        )
         log(f"topics: lowcmd={LOWCMD_TOPIC}, lowstate={LOWSTATE_TOPIC}, odom={ODOM_TOPIC}")
         log(f"sim={SIM_HZ}Hz state_pub={STATE_HZ}Hz")
         if self.band_on:
@@ -464,6 +543,11 @@ def parse_args() -> RuntimeConfig:
     parser = argparse.ArgumentParser(description="MuJoCo to Unitree DDS bridge.")
     parser.add_argument("--robot", default=DEFAULT_ROBOT, help="Robot folder under robot_model/.")
     parser.add_argument("--model-xml", help="Override robot XML path.")
+    parser.add_argument(
+        "--terrain",
+        default=DEFAULT_TERRAIN,
+        help="Terrain name under robot_model/scene or XML path.",
+    )
     parser.add_argument("--net", default=NET, help="DDS network interface.")
     parser.add_argument(
         "--band-sites",
@@ -479,7 +563,7 @@ def parse_args() -> RuntimeConfig:
     args = parser.parse_args()
     band_sites = tuple(site.strip() for site in args.band_sites.split(",") if site.strip())
     return RuntimeConfig(
-        robot=load_robot_model(args.robot, args.model_xml),
+        robot=load_robot_model(args.robot, args.model_xml, args.terrain),
         net=args.net,
         band_sites=band_sites,
         band_enabled=bool(args.band),

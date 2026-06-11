@@ -8,43 +8,41 @@ decimation: 10
 robot_joint_names: ['left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist_yaw_joint', 'left_hip_roll_joint', 'right_hip_roll_joint', 'waist_roll_joint', 'left_hip_yaw_joint', 'right_hip_yaw_joint', 'waist_pitch_joint', 'left_knee_joint', 'right_knee_joint', 'left_shoulder_pitch_joint', 'right_shoulder_pitch_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint', 'left_shoulder_roll_joint', 'right_shoulder_roll_joint', 'left_ankle_roll_joint', 'right_ankle_roll_joint', 'left_shoulder_yaw_joint', 'right_shoulder_yaw_joint', 'left_elbow_joint', 'right_elbow_joint', 'left_wrist_roll_joint', 'right_wrist_roll_joint', 'left_wrist_pitch_joint', 'right_wrist_pitch_joint', 'left_wrist_yaw_joint', 'right_wrist_yaw_joint']
 
 default_qpos: [
-  -0.10000000149011612, -0.10000000149011612, 0.0,
-  0.0, 0.0, 0.0,
-  0.0, 0.0, 0.0,
-  0.30000001192092896, 0.30000001192092896,
-  0.20000000298023224, 0.20000000298023224,
-  -0.20000000298023224, -0.20000000298023224,
-  0.20000000298023224, -0.20000000298023224,
-  0.0, 0.0,
-  0.0, 0.0,
-  0.6000000238418579, 0.6000000238418579,
-  0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+  # FR
+  160.71694946289062, 99.09842681884766, 80.35847473144531, 
+  # FL
+  160.71694946289062, 99.09842681884766, 80.35847473144531,
+  # RR
+  28.501245498657227, 28.501245498657227, 28.501245498657227,
+  # RL
+  14.250622749328613, 14.250622749328613, 14.250622749328613, 
 ]
 
 policy_input_name: "policy"
 policy_output_name: "action"
 policy_input_dim: 249
 
+height_command: 0.3
 observations:
   - type: command
-    history_len: 1
+    history_len: 5
     command_range:
-      - [-1.0, 1.0]  # lin_vel_x
-      - [-1.0, 1.0]  # lin_vel_y
-      - [-2.0, 2.0]  # ang_vel_yaw
+      - [-0.35, 0.35]  # lin_vel_x
+      - [-0.4, 0.4]  # lin_vel_y
+      - [-0.75, 0.75]  # ang_vel_yaw
   - type: base_angvel
-    history_len: 1
+    history_len: 5
   - type: projected_gravity
-    history_len: 4
+    history_len: 5
   - type: joint_pos
-    history_len: 4
+    history_len: 5
   - type: joint_vel
-    history_len: 4
+    history_len: 5
   - type: prev_action
-    history_len: 2
+    history_len: 5
 
-action_dim: 23
-action_clip: 1.0
+action_dim: 12
+action_clip: 10.0
 action_joint_names: ['left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist_yaw_joint', 'left_hip_roll_joint', 'right_hip_roll_joint', 'waist_roll_joint', 'left_hip_yaw_joint', 'right_hip_yaw_joint', 'waist_pitch_joint', 'left_knee_joint', 'right_knee_joint', 'left_shoulder_pitch_joint', 'right_shoulder_pitch_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint', 'left_shoulder_roll_joint', 'right_shoulder_roll_joint', 'left_ankle_roll_joint', 'right_ankle_roll_joint', 'left_shoulder_yaw_joint', 'right_shoulder_yaw_joint', 'left_elbow_joint', 'right_elbow_joint']
 
 controlled_joint_names: ['left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist_yaw_joint', 'left_hip_roll_joint', 'right_hip_roll_joint', 'waist_roll_joint', 'left_hip_yaw_joint', 'right_hip_yaw_joint', 'waist_pitch_joint', 'left_knee_joint', 'right_knee_joint', 'left_shoulder_pitch_joint', 'right_shoulder_pitch_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint', 'left_shoulder_roll_joint', 'right_shoulder_roll_joint', 'left_ankle_roll_joint', 'right_ankle_roll_joint', 'left_shoulder_yaw_joint', 'right_shoulder_yaw_joint', 'left_elbow_joint', 'right_elbow_joint']
@@ -52,40 +50,33 @@ controlled_joint_names: ['left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist
 policy_to_controlled_reorder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
 
 action_scale: [
-  0.5479999780654907, 0.5479999780654907, 0.5410000085830688,
-  0.35100001096725464, 0.35100001096725464, 0.4390000104904175,
-  0.5479999780654907, 0.5479999780654907, 0.4390000104904175,
-  0.35100001096725464, 0.35100001096725464,
-  0.17299999296665192, 0.17299999296665192,
-  0.4390000104904175, 0.4390000104904175,
-  0.17299999296665192, 0.17299999296665192,
-  0.4390000104904175, 0.4390000104904175,
-  0.17299999296665192, 0.17299999296665192,
-  0.17299999296665192, 0.17299999296665192,
+  # FR
+  160.71694946289062, 99.09842681884766, 80.35847473144531, 
+  # FL
+  160.71694946289062, 99.09842681884766, 80.35847473144531,
+  # RR
+  28.501245498657227, 28.501245498657227, 28.501245498657227,
+  # RL
+  14.250622749328613, 14.250622749328613, 14.250622749328613, 
 ]
 
 kps_real: [
-  # left leg
-  160.71694946289062, 99.09842681884766, 80.35847473144531, 99.09842681884766, 28.501245498657227, 28.501245498657227,
-  # right leg
-  160.71694946289062, 99.09842681884766, 80.35847473144531, 99.09842681884766, 28.501245498657227, 28.501245498657227,
-  # waist
+  # FR
+  160.71694946289062, 99.09842681884766, 80.35847473144531, 
+  # FL
+  160.71694946289062, 99.09842681884766, 80.35847473144531,
+  # RR
   28.501245498657227, 28.501245498657227, 28.501245498657227,
-  # left arm
-  14.250622749328613, 14.250622749328613, 14.250622749328613, 14.250622749328613, 14.250622749328613, 16.77832794189453, 16.77832794189453,
-  # right arm
-  14.250622749328613, 14.250622749328613, 14.250622749328613, 14.250622749328613, 14.250622749328613, 16.77832794189453, 16.77832794189453,
+  # RL
+  14.250622749328613, 14.250622749328613, 14.250622749328613, 
 ]
 
 kds_real: [
-  # left leg
-  2.557889699935913, 6.308801651000977, 2.557889699935913, 6.308801651000977, 1.8144457340240479, 1.8144457340240479,
-  # right leg
-  2.557889699935913, 6.308801651000977, 2.557889699935913, 6.308801651000977, 1.8144457340240479, 1.8144457340240479,
-  # waist
-  1.8144457340240479, 1.8144457340240479, 1.8144457340240479,
-  # left arm
-  0.9072228670120239, 0.9072228670120239, 0.9072228670120239, 0.9072228670120239, 0.9072228670120239, 1.0681414604187012, 1.0681414604187012,
-  # right arm
-  0.9072228670120239, 0.9072228670120239, 0.9072228670120239, 0.9072228670120239, 0.9072228670120239, 1.0681414604187012, 1.0681414604187012,
+  160.71694946289062, 99.09842681884766, 80.35847473144531, 
+  # FL
+  160.71694946289062, 99.09842681884766, 80.35847473144531, 
+  # RR
+  28.501245498657227, 28.501245498657227, 28.501245498657227,
+  # RL
+  14.250622749328613, 14.250622749328613, 14.250622749328613, 
 ]

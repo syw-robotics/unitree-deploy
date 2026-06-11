@@ -61,19 +61,33 @@ robot_model/<robot>/
 └── meshes/
 ```
 
+地形 MuJoCo 片段统一放在：
+```text
+robot_model/scene/
+├── flat_terrain.xml
+└── rough_terrain.xml
+```
+
 例如：
 ```bash
 python sim_bridge.py --robot g1
 ```
 
-会默认加载：
+会默认加载 G1 机器人本体，并组合默认平地：
 ```text
 robot_model/g1/g1.xml
+robot_model/scene/flat_terrain.xml
 ```
 
 如果 XML 文件名不符合这个约定，可以手动覆盖：
 ```bash
 python sim_bridge.py --robot g1 --model-xml robot_model/g1/g1.xml
+```
+
+运行时可以自由选择地形：
+```bash
+python sim_bridge.py --robot g1 --terrain rough
+python sim_bridge.py --robot g1 --terrain robot_model/scene/rough_terrain.xml
 ```
 
 策略和控制配置按机器人、策略名分目录：
@@ -136,7 +150,9 @@ ckpt/<robot>/<policy>/<policy>.onnx
 - `kps_real`
 - `kds_real`
 
-`policy.yaml` 中需要维护 policy 输入输出、action joint、controlled joint、default qpos 和 ONNX 路径。
+`policy.yaml` 中需要维护 policy 输入输出、`observations`、action joint、controlled joint、default qpos 和 ONNX 路径。
+`observations` 是按顺序拼接的列表，每项包含 `type` 和 `history_len`，可用 type 包括 `command`、`base_angvel`、`projected_gravity`、`joint_pos`、`joint_vel`、`prev_action`。
+特殊策略需要新增 observation type 时，继承 `policy.base_policy.BasePolicy` 并扩展 `OBSERVATION_TYPES` 或覆写 `_build_observation()`。
 
 ## 新增策略
 
@@ -210,6 +226,7 @@ python visualizer.py --robot g1 --no-camera
 常用参数：
 ```bash
 python sim_bridge.py --robot g1
+python sim_bridge.py --robot g1 --terrain rough
 python sim_bridge.py --robot g1 --no-band
 python sim_bridge.py --robot g1 --band-sites left_gantry_attach_point,right_gantry_attach_point
 ```

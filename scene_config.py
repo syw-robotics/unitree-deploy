@@ -12,9 +12,12 @@ import viser.transforms as vtf
 from mujoco import mj_id2name, mjtGeom, mjtObj
 
 try:
-  import pyrealsense2 as rs
+    import pyrealsense2 as rs
 except ImportError:
     rs = None
+
+
+# ----- Lightweight data containers passed between visualizer helpers -----
 
 @dataclass
 class BodyMesh:
@@ -65,6 +68,8 @@ class RealSenseCameraConfig:
     jpeg_quality: int | None = 80
 
 
+# ----- MuJoCo name and pose helpers -----
+
 def _body_name(mj_model: mujoco.MjModel, body_id: int) -> str:
     name = mj_id2name(mj_model, mjtObj.mjOBJ_BODY, body_id)
     return name or f"body_{body_id}"
@@ -93,6 +98,8 @@ def _opencv_pose_from_mujoco_matrix(position: np.ndarray, rotation: np.ndarray) 
     wxyz = vtf.SO3.from_matrix(adjusted_rotation).wxyz.astype(np.float32)
     return position.astype(np.float32), wxyz
 
+
+# ----- Image conversion helpers -----
 
 def _camera_pose(mj_data: mujoco.MjData, camera_id: int) -> tuple[np.ndarray, np.ndarray]:
     cam_pos = np.asarray(mj_data.cam_xpos[camera_id], dtype=np.float32)
@@ -124,6 +131,8 @@ def _depth_to_display_image(
     image[~valid] = 0
     return image
 
+
+# ----- MuJoCo geom/site -> trimesh conversion -----
 
 def _is_fixed_body(mj_model: mujoco.MjModel, body_id: int) -> bool:
     is_weld = int(mj_model.body_weldid[body_id]) == 0
@@ -163,28 +172,29 @@ def _site_rgba(mj_model: mujoco.MjModel, site_id: int) -> np.ndarray:
     return np.clip(rgba, 0.0, 1.0)
 
 
-def _primitive_mesh(mj_model: mujoco.MjModel, geom_id: int) -> trimesh.Trimesh:
-    size = np.asarray(mj_model.geom_size[geom_id], dtype=np.float32)
-    geom_type = int(mj_model.geom_type[geom_id])
-
+def _shape_mesh(geom_type: int, size: np.ndarray, *, allow_plane: bool = False) -> trimesh.Trimesh:
     if geom_type == mjtGeom.mjGEOM_SPHERE:
-        mesh = trimesh.creation.icosphere(radius=float(size[0]), subdivisions=2)
+        return trimesh.creation.icosphere(radius=float(size[0]), subdivisions=2)
     elif geom_type == mjtGeom.mjGEOM_BOX:
-        mesh = trimesh.creation.box(extents=2.0 * size)
+        return trimesh.creation.box(extents=2.0 * size)
     elif geom_type == mjtGeom.mjGEOM_CAPSULE:
-        mesh = trimesh.creation.capsule(radius=float(size[0]), height=float(2.0 * size[1]))
+        return trimesh.creation.capsule(radius=float(size[0]), height=float(2.0 * size[1]))
     elif geom_type == mjtGeom.mjGEOM_CYLINDER:
-        mesh = trimesh.creation.cylinder(radius=float(size[0]), height=float(2.0 * size[1]))
-    elif geom_type == mjtGeom.mjGEOM_PLANE:
+        return trimesh.creation.cylinder(radius=float(size[0]), height=float(2.0 * size[1]))
+    elif geom_type == mjtGeom.mjGEOM_PLANE and allow_plane:
         sx = float(2.0 * size[0]) if size[0] > 0 else 20.0
         sy = float(2.0 * size[1]) if size[1] > 0 else 20.0
-        mesh = trimesh.creation.box(extents=(sx, sy, 0.001))
+        return trimesh.creation.box(extents=(sx, sy, 0.001))
     elif geom_type == mjtGeom.mjGEOM_ELLIPSOID:
         mesh = trimesh.creation.icosphere(radius=1.0, subdivisions=3)
         mesh.apply_scale(size)
-    else:
-        raise ValueError(f"Unsupported geom type: {geom_type}")
+        return mesh
+    raise ValueError(f"Unsupported geom type: {geom_type}")
 
+
+def _primitive_mesh(mj_model: mujoco.MjModel, geom_id: int) -> trimesh.Trimesh:
+    size = np.asarray(mj_model.geom_size[geom_id], dtype=np.float32)
+    mesh = _shape_mesh(int(mj_model.geom_type[geom_id]), size, allow_plane=True)
     return _paint_mesh(mesh, _geom_rgba(mj_model, geom_id))
 
 
@@ -217,22 +227,7 @@ def geom_to_trimesh(mj_model: mujoco.MjModel, geom_id: int) -> trimesh.Trimesh:
 
 def site_to_trimesh(mj_model: mujoco.MjModel, site_id: int) -> trimesh.Trimesh:
     size = np.asarray(mj_model.site_size[site_id], dtype=np.float32)
-    site_type = int(mj_model.site_type[site_id])
-
-    if site_type == mjtGeom.mjGEOM_SPHERE:
-        mesh = trimesh.creation.icosphere(radius=float(size[0]), subdivisions=2)
-    elif site_type == mjtGeom.mjGEOM_BOX:
-        mesh = trimesh.creation.box(extents=2.0 * size)
-    elif site_type == mjtGeom.mjGEOM_CAPSULE:
-        mesh = trimesh.creation.capsule(radius=float(size[0]), height=float(2.0 * size[1]))
-    elif site_type == mjtGeom.mjGEOM_CYLINDER:
-        mesh = trimesh.creation.cylinder(radius=float(size[0]), height=float(2.0 * size[1]))
-    elif site_type == mjtGeom.mjGEOM_ELLIPSOID:
-        mesh = trimesh.creation.icosphere(radius=1.0, subdivisions=3)
-        mesh.apply_scale(size)
-    else:
-        raise ValueError(f"Unsupported site type: {site_type}")
-
+    mesh = _shape_mesh(int(mj_model.site_type[site_id]), size)
     return _paint_mesh(mesh, _site_rgba(mj_model, site_id))
 
 
@@ -242,6 +237,7 @@ def extract_body_meshes(
     include_collision: bool = False,
     skip_plane_geoms: bool = False,
 ) -> list[BodyMesh]:
+    # Meshes are extracted once at startup; dynamic bodies later only update pose handles.
     mj_data = mujoco.MjData(mj_model)
     mujoco.mj_forward(mj_model, mj_data)
 
@@ -281,6 +277,7 @@ def extract_body_meshes(
 
 
 def extract_site_meshes(mj_model: mujoco.MjModel) -> list[SiteMesh]:
+    # Sites are useful for debugging attachment points, cameras, and support bands.
     mj_data = mujoco.MjData(mj_model)
     mujoco.mj_forward(mj_model, mj_data)
 
@@ -306,7 +303,11 @@ def extract_site_meshes(mj_model: mujoco.MjModel) -> list[SiteMesh]:
             )
         )
     return site_meshes
+
+
 class RealSenseCameraStream:
+    """RealSense capture plus optional Viser GUI/frustum visualization."""
+
     def __init__(
         self,
         config: RealSenseCameraConfig,
@@ -315,6 +316,9 @@ class RealSenseCameraStream:
         mj_model: mujoco.MjModel | None = None,
         show_frustum: bool = True,
     ):
+        if rs is None:
+            raise ImportError("pyrealsense2 is required to enable RealSense cameras")
+
         self.config = config
         self.server = server
         self.mj_model = mj_model
@@ -362,6 +366,7 @@ class RealSenseCameraStream:
                 self._align = rs.align(rs.stream.color)
 
         if self.mj_model is not None:
+            # Prefer an explicitly configured camera, then common G1 head camera names.
             pose_camera_name = self.config.pose_camera_name or self.config.camera_name
             self._pose_camera_id = _camera_id_by_name(self.mj_model, pose_camera_name)
             if self._pose_camera_id is None:
@@ -447,11 +452,12 @@ class RealSenseCameraStream:
             self._frustum_handle.position = position
             self._frustum_handle.wxyz = wxyz
 
-        if self._gui_rgb_image_handle is not None and self.latest_frame is not None and self.latest_frame.color is not None:
-            self._gui_rgb_image_handle.image = self.latest_frame.color
-        if self._gui_depth_image_handle is not None and self.latest_frame is not None and self.latest_frame.depth is not None:
+        frame = self.latest_frame
+        if self._gui_rgb_image_handle is not None and frame is not None and frame.color is not None:
+            self._gui_rgb_image_handle.image = frame.color
+        if self._gui_depth_image_handle is not None and frame is not None and frame.depth is not None:
             self._gui_depth_image_handle.image = _depth_to_display_image(
-                self.latest_frame.depth,
+                frame.depth,
                 min_depth_m=self.config.depth_visualization_min_m,
                 max_depth_m=self.config.depth_visualization_max_m,
             )
@@ -466,6 +472,8 @@ class RealSenseCameraStream:
 
 
 class StandaloneMujocoScene:
+    """Reusable Viser scene that mirrors MuJoCo body/site poses."""
+
     def __init__(
         self,
         server: viser.ViserServer,
@@ -497,6 +505,8 @@ class StandaloneMujocoScene:
         self.site_handles: dict[int, object] = {}
         self.real_sense_cameras: list[RealSenseCameraStream] = []
 
+    # ----- Construction -----
+
     @classmethod
     def create(
         cls,
@@ -520,6 +530,8 @@ class StandaloneMujocoScene:
         )
         scene._setup()
         return scene
+
+    # ----- Static scene objects -----
 
     def _setup(self) -> None:
         mujoco.mj_forward(self.mj_model, self.mj_data)
@@ -610,6 +622,8 @@ class StandaloneMujocoScene:
                 print(f"[WARN] Failed to create RealSense camera {config.camera_name}: {exc}")
                 continue
             self.real_sense_cameras.append(camera)
+
+    # ----- Per-frame updates -----
 
     def update_from_mjdata(self, mj_data: mujoco.MjData) -> None:
         with self.server.atomic():

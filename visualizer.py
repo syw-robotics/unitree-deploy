@@ -8,7 +8,7 @@ import mujoco
 import numpy as np
 import viser
 import yaml
-from robot_config import DEFAULT_ROBOT, RobotModel, load_robot_model
+from robot_config import DEFAULT_ROBOT, DEFAULT_TERRAIN, RobotModel, load_robot_model
 from scene_config import RealSenseCameraConfig, StandaloneMujocoScene
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscriber
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
@@ -35,6 +35,14 @@ class RuntimeConfig:
 
 
 class RobotStateVisualizer:
+    """Render LowState/Odom DDS messages on top of a MuJoCo model in Viser.
+
+    Data flow:
+      LowState motor_state -> MuJoCo qpos joints
+      optional Odom -> MuJoCo freejoint base pose
+      MuJoCo forward kinematics -> Viser scene
+    """
+
     def __init__(self, config: RuntimeConfig):
         self.config = config
         self.cfg = self.load_config()
@@ -56,8 +64,10 @@ class RobotStateVisualizer:
         self.timer = None
         self.closed = False
 
+    # ----- Config and scene setup -----
+
     def load_config(self) -> dict:
-        path = self.config.visualizer_yaml or self.config.robot.xml_path.with_name("visualizer.yaml")
+        path = self.config.visualizer_yaml or self.config.robot.config_dir / "visualizer.yaml"
         if not path.exists():
             log(f"no visualizer yaml found at {path}; using automatic joint mapping")
             return {}
@@ -91,6 +101,8 @@ class RobotStateVisualizer:
             f"robot={self.config.robot.name} joints={len(self.joint_map)} "
             f"lowstate={self.lowstate_topic} odom={'on' if self.odomstate_subscriber else 'off'}"
         )
+
+    # ----- MuJoCo model mapping -----
 
     def resolve_base_qpos_adr(self) -> int | None:
         base_joint = self.cfg.get("base_joint")
@@ -153,6 +165,8 @@ class RobotStateVisualizer:
             joint_map.append((msg_i, int(self.model.jnt_qposadr[joint_id])))
         return joint_map
 
+    # ----- Optional RealSense visualization -----
+
     def build_camera_configs(self) -> list[RealSenseCameraConfig] | None:
         enable = bool(self.cfg.get("enable_cameras", False))
         if self.config.camera is not None:
@@ -188,6 +202,8 @@ class RobotStateVisualizer:
             return None
         return configs
 
+    # ----- DDS callbacks and render loop -----
+
     def Start(self) -> None:
         self.timer = RecurrentThread(interval=0.05, target=self.Visualize, name="visualize")
         self.timer.Start()
@@ -206,6 +222,7 @@ class RobotStateVisualizer:
             return
 
         with self.lock:
+            # Odom updates only the floating base; joint qpos continues to come from LowState.
             self.data.qpos[self.base_qpos_adr : self.base_qpos_adr + 3] = np.asarray(
                 msg.position[:3],
                 dtype=np.float64,
@@ -222,6 +239,8 @@ class RobotStateVisualizer:
         with self.lock:
             mujoco.mj_forward(self.model, self.data)
             self.viser_scene.update_from_mjdata(self.data)
+
+    # ----- Cleanup -----
 
     def Close(self) -> None:
         if self.closed:
@@ -244,6 +263,11 @@ def parse_args() -> RuntimeConfig:
     parser = argparse.ArgumentParser(description="Robot state visualizer for real robot or simulation.")
     parser.add_argument("--robot", default=DEFAULT_ROBOT, help="Robot folder under robot_model/.")
     parser.add_argument("--model-xml", help="Override robot XML path.")
+    parser.add_argument(
+        "--terrain",
+        default=DEFAULT_TERRAIN,
+        help="Terrain name under robot_model/scene or XML path.",
+    )
     parser.add_argument("--visualizer-yaml", type=Path, help="Override visualizer yaml path.")
     parser.add_argument("--net", default="lo", help="Optional DDS network interface.")
     parser.add_argument(
@@ -260,7 +284,7 @@ def parse_args() -> RuntimeConfig:
     )
     args = parser.parse_args()
     return RuntimeConfig(
-        robot=load_robot_model(args.robot, args.model_xml),
+        robot=load_robot_model(args.robot, args.model_xml, args.terrain),
         visualizer_yaml=args.visualizer_yaml,
         mode=args.mode,
         net=args.net,

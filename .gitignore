@@ -1,3 +1,7 @@
 __pycache__
 
 stubs
+
+MUJOCO_LOG.TXT
+
+.vscode

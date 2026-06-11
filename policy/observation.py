@@ -8,11 +8,12 @@ import numpy as np
 
 @dataclass(frozen=True)
 class ObservationContext:
+    """One control-step snapshot passed from controller.py into policy.py."""
+
     q: np.ndarray
     dq: np.ndarray
     quat: np.ndarray
     gyro: np.ndarray
-    lin_acc: np.ndarray
     command: np.ndarray
 
 def _normalize_quaternion(quat) -> np.ndarray:
@@ -22,20 +23,21 @@ def _normalize_quaternion(quat) -> np.ndarray:
 
 
 def _quat_to_body_gravity(quat) -> np.ndarray:
+    # Equivalent to R(q).T @ [0, 0, -1], written directly to avoid building a matrix per step.
     w, x, y, z = _normalize_quaternion(quat)
-    rot = np.array(
+    return np.array(
         [
-            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
-            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
-            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+            2.0 * (y * w - x * z),
+            -2.0 * (y * z + x * w),
+            2.0 * (x * x + y * y) - 1.0,
         ],
         dtype=np.float32,
     )
-    gravity_world = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-    return rot.T @ gravity_world
 
 
 class ObservationBase:
+    """Base class for one observation term with optional history stacking."""
+
     def __init__(self, *, base_dim: int, history_len: int, dtype=np.float32) -> None:
         self.base_dim = int(base_dim)
         self.history_len = int(history_len)
@@ -56,34 +58,34 @@ class ObservationBase:
         self.buffer[0] = current
 
     def compute(self) -> np.ndarray:
-        return self.buffer.reshape(-1).copy()
+        return self.buffer.reshape(-1)
 
     def _compute_current(self, context: ObservationContext) -> np.ndarray:
         raise NotImplementedError
 
 
 class CommandObservation(ObservationBase):
+    """Joystick command scaled from [-1, 1] into the policy command range."""
+
     def __init__(
         self,
         *,
         history_len: int,
-        height_command: float,
         command_range,
         dtype=np.float32,
     ) -> None:
         super().__init__(base_dim=4, history_len=history_len, dtype=dtype)
-        self.height_command = float(height_command)
         command_range_array = np.asarray(command_range, dtype=self.dtype)
         self.command_min = command_range_array[:, 0]
         self.command_max = command_range_array[:, 1]
+        self._range = self.command_max - self.command_min
+        self._current = np.empty(4, dtype=self.dtype)
 
     def _compute_current(self, context: ObservationContext) -> np.ndarray:
         joystick = np.asarray(context.command, dtype=self.dtype).reshape(-1)
         joystick = np.clip(joystick, -1.0, 1.0)
-        command = 0.5 * (joystick + 1.0) * (self.command_max - self.command_min) + self.command_min
-        return np.concatenate(
-            (command, np.array([self.height_command], dtype=self.dtype))
-        ).astype(self.dtype, copy=False)
+        self._current[:3] = 0.5 * (joystick + 1.0) * self._range + self.command_min
+        return self._current
 
 
 class ProjectedGravityObservation(ObservationBase):
@@ -126,28 +128,15 @@ class JointVelocityObservation(ObservationBase):
         controlled_joint_indices: np.ndarray,
         history_len: int,
         use_position_difference: bool = False,
-        control_dt: float | None = None,
         dtype=np.float32,
     ) -> None:
         controlled_joint_indices = np.asarray(controlled_joint_indices, dtype=np.int64).reshape(-1)
         super().__init__(base_dim=controlled_joint_indices.size, history_len=history_len, dtype=dtype)
         self.controlled_joint_indices = controlled_joint_indices
         self.use_position_difference = bool(use_position_difference)
-        self.control_dt = None if control_dt is None else float(control_dt)
         self._previous_q = None
 
     def _compute_current(self, context: ObservationContext) -> np.ndarray:
-        if self.use_position_difference:
-            if self.control_dt is None or self.control_dt <= 0.0:
-                raise ValueError("control_dt must be positive when use_position_difference is enabled.")
-            q = np.asarray(context.q, dtype=self.dtype).reshape(-1)[self.controlled_joint_indices]
-            if self._previous_q is None:
-                joint_vel = np.zeros_like(q)
-            else:
-                joint_vel = (q - self._previous_q) / self.control_dt
-            self._previous_q = q.copy()
-            return joint_vel
-
         dq = np.asarray(context.dq, dtype=self.dtype).reshape(-1)
         return dq[self.controlled_joint_indices]
 
@@ -157,6 +146,8 @@ class JointVelocityObservation(ObservationBase):
 
 
 class PreviousActionObservation(ObservationBase):
+    """Action history is updated after ONNX inference, not from the sensor snapshot."""
+
     def __init__(self, *, action_dim: int, history_len: int, dtype=np.float32) -> None:
         super().__init__(base_dim=action_dim, history_len=history_len, dtype=dtype)
 
@@ -174,13 +165,22 @@ class PreviousActionObservation(ObservationBase):
 
 
 class ObservationGroup:
+    """Fixed-layout observation vector assembled from named observation terms."""
+
     def __init__(self, observations: Sequence[ObservationBase], *, dtype=np.float32) -> None:
         self.observations = list(observations)
         self.dtype = np.dtype(dtype)
+        self._slices: list[tuple[ObservationBase, slice]] = []
+        offset = 0
+        for observation in self.observations:
+            next_offset = offset + observation.size
+            self._slices.append((observation, slice(offset, next_offset)))
+            offset = next_offset
+        self.output = np.zeros(offset, dtype=self.dtype)
 
     @property
     def size(self) -> int:
-        return int(sum(observation.size for observation in self.observations))
+        return int(self.output.size)
 
     def reset(self) -> None:
         for observation in self.observations:
@@ -191,6 +191,6 @@ class ObservationGroup:
             observation.update(context)
 
     def compute(self) -> np.ndarray:
-        return np.concatenate(
-            [observation.compute().astype(self.dtype, copy=False) for observation in self.observations]
-        ).astype(self.dtype, copy=False)
+        for observation, output_slice in self._slices:
+            self.output[output_slice] = observation.compute()
+        return self.output

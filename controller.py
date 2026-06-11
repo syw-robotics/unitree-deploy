@@ -8,8 +8,8 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from observation import ObservationContext
-from policy import Policy
+from policy.observation import ObservationContext
+from policy.base_policy import BasePolicy
 from robot_config import DEFAULT_ROBOT
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 from unitree_sdk2py.core.channel import (
@@ -24,14 +24,14 @@ from unitree_sdk2py.utils.crc import CRC
 
 LOWCMD_TOPIC = "rt/lowcmd"
 LOWSTATE_TOPIC = "rt/lowstate"
-NET = "lo"
+LOCAL_NET = "lo"
 MODE = "sim"
 MOVE_TO_DEFAULT_TIME = 2.0
 
 ZERO_TORQUE = "zero_torque_state"
 MOVE_TO_DEFAULT = "move_to_default_qpos"
 DEFAULT_QPOS = "default_qpos_state"
-RUN = "run"
+RUN_POLICY = "run_policy"
 
 BUTTON_BITS = {
     "Start": (2, 2),
@@ -93,17 +93,25 @@ class RemoteCommand:
 
 
 class Controller:
+    """Real-time Unitree controller shared by sim and real deployment.
+
+    Data flow:
+      LowState -> policy joint order -> observation -> ONNX policy -> raw joint order -> LowCmd
+    """
+
     def __init__(self, config: RuntimeConfig):
         self.config = config
         self.ckpt_dir = config.ckpt_dir.resolve()
         self.cfg = self.load_yaml(self.ckpt_dir / "controller.yaml")
-        self.policy = Policy(self.ckpt_dir / "policy.yaml")
+        self.policy = BasePolicy(self.ckpt_dir / "policy.yaml")
         self.robot = config.robot or self.cfg.get("robot", DEFAULT_ROBOT)
 
         self.lowcmd_topic = self.cfg.get("lowcmd_topic", LOWCMD_TOPIC)
         self.lowstate_topic = self.cfg.get("lowstate_topic", LOWSTATE_TOPIC)
         self.real_joint_names = list(self.cfg["real_joint_names"])
         self.policy_joint_names = list(self.cfg["isaac_joint_names_state"])
+        # "raw" is the order used by the active backend: MuJoCo in sim, DDS motor order on real hardware.
+        # The policy always sees the Isaac training order.
         raw_key = "mujoco_joint_names" if config.mode == "sim" else "real_joint_names"
         self.raw_joint_names = list(self.cfg[raw_key])
         self.num_joints = len(self.raw_joint_names)
@@ -115,6 +123,10 @@ class Controller:
         self.kd = self.gain_array("kds_real")
         self.zero = np.zeros(self.num_joints, dtype=np.float64)
         self.zero_torque_kd = np.ones(self.num_joints, dtype=np.float64)
+        self.default_q_policy = self.policy.default_joint_pos
+        self.default_q_raw = self.default_q_policy[self.policy_to_raw]
+        self.target_policy = np.zeros(self.num_joints, dtype=np.float64)
+        self.target_raw = np.zeros(self.num_joints, dtype=np.float64)
 
         self.lock = threading.Lock()
         self.alive = True
@@ -132,7 +144,6 @@ class Controller:
         self.move_start_q = np.zeros(self.num_joints, dtype=np.float64)
         self.quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.gyro = np.zeros(3, dtype=np.float64)
-        self.lin_acc = np.zeros(3, dtype=np.float64)
         self.command = np.zeros(3, dtype=np.float64)
         self.remote = RemoteCommand()
 
@@ -148,6 +159,8 @@ class Controller:
 
         signal.signal(signal.SIGINT, self.close)
         signal.signal(signal.SIGTERM, self.close)
+
+    # ----- Config and joint-order helpers -----
 
     @staticmethod
     def load_yaml(path: Path):
@@ -165,9 +178,9 @@ class Controller:
                 f"joint count mismatch: {len(self.policy_joint_names)} policy joints, "
                 f"{self.num_joints} raw joints"
             )
-        if len(self.policy.default_joint_pos_full) != self.num_joints:
+        if len(self.policy.default_joint_pos) != self.num_joints:
             raise ValueError(
-                f"policy default_qpos_full has {len(self.policy.default_joint_pos_full)} joints, "
+                f"policy default_qpos has {len(self.policy.default_joint_pos)} joints, "
                 f"controller has {self.num_joints}"
             )
 
@@ -176,11 +189,11 @@ class Controller:
         by_name = dict(zip(self.real_joint_names, values))
         return np.asarray([by_name[name] for name in self.raw_joint_names], dtype=np.float64)
 
-    def raw_to_policy_order(self, value: np.ndarray) -> np.ndarray:
-        return np.asarray(value, dtype=np.float64).reshape(-1)[self.raw_to_policy]
+    def write_policy_to_raw(self, value: np.ndarray) -> np.ndarray:
+        np.take(value, self.policy_to_raw, out=self.target_raw)
+        return self.target_raw
 
-    def policy_to_raw_order(self, value: np.ndarray) -> np.ndarray:
-        return np.asarray(value, dtype=np.float64).reshape(-1)[self.policy_to_raw]
+    # ----- Real-robot setup -----
 
     def enter_debug_mode(self) -> None:
         log("real mode: releasing current motion mode...")
@@ -195,6 +208,8 @@ class Controller:
             time.sleep(1.0)
         log("real mode: motion mode released")
 
+    # ----- DDS input and controller state snapshot -----
+
     def on_lowstate(self, msg: LowState_) -> None:
         with self.lock:
             self.mode_machine = int(msg.mode_machine)
@@ -205,15 +220,25 @@ class Controller:
                 self.q[i] = float(state.q)
                 self.dq[i] = float(state.dq)
 
-            self.q_policy[:] = self.raw_to_policy_order(self.q)
-            self.dq_policy[:] = self.raw_to_policy_order(self.dq)
+            np.take(self.q, self.raw_to_policy, out=self.q_policy)
+            np.take(self.dq, self.raw_to_policy, out=self.dq_policy)
             self.quat[:] = np.asarray(msg.imu_state.quaternion[:4], dtype=np.float64)
             self.gyro[:] = np.asarray(msg.imu_state.gyroscope[:3], dtype=np.float64)
-            self.lin_acc[:] = np.asarray(msg.imu_state.accelerometer[:3], dtype=np.float64)
-
             self.remote.set(msg.wireless_remote)
             self.command[:] = [self.remote.ly, -self.remote.lx, -self.remote.rx]
             self.has_low_state = True
+
+    def observation(self) -> ObservationContext:
+        with self.lock:
+            return ObservationContext(
+                q=self.q_policy.copy(),
+                dq=self.dq_policy.copy(),
+                quat=self.quat.copy(),
+                gyro=self.gyro.copy(),
+                command=self.command.copy(),
+            )
+
+    # ----- State-machine controls -----
 
     def consume_button(self, name: str) -> bool:
         with self.lock:
@@ -230,16 +255,7 @@ class Controller:
                 self.move_start_q[:] = self.q_policy
         log(f"state -> {state}")
 
-    def observation(self) -> ObservationContext:
-        with self.lock:
-            return ObservationContext(
-                q=self.q_policy.copy(),
-                dq=self.dq_policy.copy(),
-                quat=self.quat.copy(),
-                gyro=self.gyro.copy(),
-                lin_acc=self.lin_acc.copy(),
-                command=self.command.copy(),
-            )
+    # ----- DDS output -----
 
     def send_joint_cmd(
         self,
@@ -257,6 +273,7 @@ class Controller:
             self.low_cmd.mode_pr = int(self.mode_pr)
             self.low_cmd.mode_machine = int(self.mode_machine)
 
+        # Clear all motors first so any joints outside num_joints stay disabled.
         for cmd in self.low_cmd.motor_cmd:
             cmd.mode = 0
             cmd.q = cmd.dq = cmd.tau = cmd.kp = cmd.kd = 0.0
@@ -273,8 +290,7 @@ class Controller:
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
         self.lowcmd_pub.Write(self.low_cmd)
 
-    def default_q_policy(self) -> np.ndarray:
-        return self.policy.default_joint_pos_full.astype(np.float64, copy=True)
+    # ----- Per-state control steps -----
 
     def step_zero_torque(self) -> None:
         if self.consume_button("A"):
@@ -295,8 +311,11 @@ class Controller:
             0.0,
             1.0,
         )
-        target_policy = (1.0 - ratio) * self.move_start_q + ratio * self.default_q_policy()
-        self.send_joint_cmd(self.policy_to_raw_order(target_policy), self.kp, self.kd)
+        self.target_policy[:] = self.default_q_policy
+        self.target_policy -= self.move_start_q
+        self.target_policy *= ratio
+        self.target_policy += self.move_start_q
+        self.send_joint_cmd(self.write_policy_to_raw(self.target_policy), self.kp, self.kd)
 
         if ratio >= 1.0:
             self.transition(DEFAULT_QPOS)
@@ -306,22 +325,19 @@ class Controller:
             self.transition(ZERO_TORQUE)
             return
         if self.consume_button("Start"):
-            self.transition(RUN)
+            self.transition(RUN_POLICY)
             return
 
-        self.send_joint_cmd(
-            self.policy_to_raw_order(self.default_q_policy()),
-            self.kp,
-            self.kd,
-        )
+        self.send_joint_cmd(self.default_q_raw, self.kp, self.kd)
 
-    def step_run(self) -> None:
+    def step_policy(self) -> None:
         if self.consume_button("X"):
             self.transition(ZERO_TORQUE)
             return
 
+        # Policy returns targets in policy order; LowCmd must be written in raw motor order.
         target_policy = self.policy.compute_target_q(self.observation())
-        self.send_joint_cmd(self.policy_to_raw_order(target_policy), self.kp, self.kd)
+        self.send_joint_cmd(self.write_policy_to_raw(target_policy), self.kp, self.kd)
 
     def step(self) -> None:
         if self.state == ZERO_TORQUE:
@@ -330,8 +346,10 @@ class Controller:
             self.step_move_to_default()
         elif self.state == DEFAULT_QPOS:
             self.step_default_qpos()
-        elif self.state == RUN:
-            self.step_run()
+        elif self.state == RUN_POLICY:
+            self.step_policy()
+
+    # ----- Main loop and cleanup -----
 
     def spin(self) -> None:
         log(
@@ -340,7 +358,7 @@ class Controller:
         )
         if self.config.mode == "sim":
             log("sim keymap: b->A, m->Start, r->X + reset sim state")
-        log("A: zero torque -> default pose, Start: default pose -> run, X: back to zero torque")
+        log("A: zero torque -> default pose, Start: default pose -> run policy, X: back to zero torque")
         log("waiting for lowstate...")
 
         timer = LoopTimer(float(self.policy.control_step_dt))
@@ -377,7 +395,7 @@ class Controller:
 def parse_args() -> RuntimeConfig:
     parser = argparse.ArgumentParser(description="Reusable Unitree controller for sim or real robot.")
     parser.add_argument("--mode", choices=("real", "sim"), default=MODE)
-    parser.add_argument("--net", default=NET, help="DDS network interface. Use lo for local sim.")
+    parser.add_argument("--net", default=LOCAL_NET, help="DDS network interface. Use lo for local sim.")
     parser.add_argument("--robot", help="Robot name for logs. Defaults to controller.yaml robot.")
     parser.add_argument("--ckpt", type=Path, help="Checkpoint directory containing controller.yaml and policy.yaml.")
     parser.add_argument("--deploy-yaml", type=Path, help="Compatibility alias: use the parent directory as --ckpt.")

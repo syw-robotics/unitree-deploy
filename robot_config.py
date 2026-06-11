@@ -1,31 +1,56 @@
 from __future__ import annotations
 
+import copy
+import hashlib
+import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
 
 DEFAULT_ROBOT = "g1"
+DEFAULT_TERRAIN = "flat"
 ROBOT_MODEL_ROOT = Path(__file__).parent / "robot_model"
+SCENE_ROOT = ROBOT_MODEL_ROOT / "scene"
 
 
 @dataclass(frozen=True)
 class RobotModel:
+    """Resolved robot identity and MuJoCo XML path."""
+
     name: str
     xml_path: Path
+    source_xml_path: Path
+    config_dir: Path
+    terrain: str
+    terrain_xml_path: Path
 
 
 def available_robots() -> list[str]:
     if not ROBOT_MODEL_ROOT.exists():
         return []
-    return sorted(path.name for path in ROBOT_MODEL_ROOT.iterdir() if path.is_dir())
+    return sorted(
+        path.name for path in ROBOT_MODEL_ROOT.iterdir() if path.is_dir() and path.name != "scene"
+    )
 
 
-def load_robot_model(robot: str = DEFAULT_ROBOT, model_xml: str | Path | None = None) -> RobotModel:
+def available_terrains() -> list[str]:
+    if not SCENE_ROOT.exists():
+        return []
+    return sorted(path.stem.removesuffix("_terrain") for path in SCENE_ROOT.glob("*.xml"))
+
+
+def load_robot_model(
+    robot: str = DEFAULT_ROBOT,
+    model_xml: str | Path | None = None,
+    terrain: str | Path = DEFAULT_TERRAIN,
+) -> RobotModel:
+    # Most scripts accept --robot for the default layout and --model-xml for one-off XML overrides.
     if model_xml is not None:
         xml_path = Path(model_xml).expanduser().resolve()
         if not xml_path.exists():
             raise FileNotFoundError(f"robot model XML not found: {xml_path}")
-        return RobotModel(name=robot, xml_path=xml_path)
+        return _robot_model_with_terrain(robot, xml_path, terrain)
 
     robot_dir = ROBOT_MODEL_ROOT / robot
     xml_path = robot_dir / f"{robot}.xml"
@@ -39,4 +64,120 @@ def load_robot_model(robot: str = DEFAULT_ROBOT, model_xml: str | Path | None = 
                 f"robot '{robot}' model not found at {xml_path}. Available robots: {choices}"
             )
 
-    return RobotModel(name=robot, xml_path=xml_path.resolve())
+    return _robot_model_with_terrain(robot, xml_path.resolve(), terrain)
+
+
+def _robot_model_with_terrain(
+    robot: str,
+    source_xml_path: Path,
+    terrain: str | Path,
+) -> RobotModel:
+    config_dir = source_xml_path.parent
+    terrain_xml_path = resolve_terrain_xml(terrain)
+    combined_xml_path = compose_model_scene_xml(source_xml_path, terrain_xml_path, robot)
+    return RobotModel(
+        name=robot,
+        xml_path=combined_xml_path,
+        source_xml_path=source_xml_path,
+        config_dir=config_dir,
+        terrain=terrain_xml_path.stem.removesuffix("_terrain"),
+        terrain_xml_path=terrain_xml_path,
+    )
+
+
+def resolve_terrain_xml(terrain: str | Path) -> Path:
+    terrain_name = str(terrain).strip()
+
+    terrain_path = Path(terrain_name).expanduser()
+    candidates: list[Path]
+    if terrain_path.suffix == ".xml" or terrain_path.parent != Path("."):
+        candidates = [terrain_path]
+    else:
+        candidates = [
+            SCENE_ROOT / f"{terrain_name}.xml",
+            SCENE_ROOT / f"{terrain_name}_terrain.xml",
+        ]
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved.exists():
+            return resolved
+
+    choices = ", ".join(available_terrains()) or "none"
+    raise FileNotFoundError(f"terrain '{terrain_name}' not found. Available terrains: {choices}")
+
+
+def compose_model_scene_xml(source_xml_path: Path, terrain_xml_path: Path, robot: str) -> Path:
+    source_bytes = source_xml_path.read_bytes()
+    terrain_bytes = terrain_xml_path.read_bytes()
+    cache_key = b"\0".join(
+        [
+            source_xml_path.as_posix().encode(),
+            terrain_xml_path.as_posix().encode(),
+            source_bytes,
+            terrain_bytes,
+        ]
+    )
+    digest = hashlib.sha256(cache_key).hexdigest()[:12]
+
+    output_dir = Path(tempfile.gettempdir()) / "unitree-deploy-mujoco"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{robot}_{source_xml_path.stem}_{terrain_xml_path.stem}_{digest}.xml"
+    if output_path.exists():
+        return output_path
+
+    robot_root = ET.fromstring(source_bytes)
+    terrain_root = ET.fromstring(terrain_bytes)
+
+    _absolutize_compiler_dirs(robot_root, source_xml_path.parent)
+    _absolutize_asset_files(terrain_root, terrain_xml_path.parent)
+    _merge_mjcf_roots(robot_root, terrain_root)
+
+    tree = ET.ElementTree(robot_root)
+    ET.indent(tree, space="  ")
+    tree.write(output_path, encoding="utf-8", xml_declaration=False)
+    return output_path
+
+
+def _merge_mjcf_roots(robot_root: ET.Element, terrain_root: ET.Element) -> None:
+    if robot_root.tag != "mujoco" or terrain_root.tag != "mujoco":
+        raise ValueError("robot and terrain XML files must both have a <mujoco> root")
+
+    for terrain_section in terrain_root:
+        robot_section = robot_root.find(terrain_section.tag)
+        if robot_section is None:
+            robot_root.append(copy.deepcopy(terrain_section))
+            continue
+
+        for child in terrain_section:
+            robot_section.append(copy.deepcopy(child))
+
+
+def _absolutize_compiler_dirs(root: ET.Element, base_dir: Path) -> None:
+    compiler = root.find("compiler")
+    if compiler is None:
+        return
+
+    for attr in ("meshdir", "texturedir", "assetdir"):
+        value = compiler.get(attr)
+        if not value:
+            continue
+        value_path = Path(value).expanduser()
+        if not value_path.is_absolute():
+            value_path = (base_dir / value_path).resolve()
+        compiler.set(attr, value_path.as_posix())
+
+
+def _absolutize_asset_files(root: ET.Element, base_dir: Path) -> None:
+    asset = root.find("asset")
+    if asset is None:
+        return
+
+    for element in asset.iter():
+        value = element.get("file")
+        if not value:
+            continue
+        value_path = Path(value).expanduser()
+        if not value_path.is_absolute():
+            value_path = (base_dir / value_path).resolve()
+        element.set("file", value_path.as_posix())
