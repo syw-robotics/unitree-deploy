@@ -7,9 +7,15 @@ import time
 from dataclasses import dataclass
 
 import mujoco
-import mujoco.viewer
 import numpy as np
-from robot_config import DEFAULT_ROBOT, DEFAULT_TERRAIN, RobotModel, load_robot_model
+from robot_config import (
+    DEFAULT_ROBOT,
+    DEFAULT_TERRAIN,
+    DEFAULT_VIEWER,
+    VIEWER_CHOICES,
+    RobotModel,
+    load_robot_model,
+)
 from sshkeyboard import listen_keyboard, stop_listening
 from unitree_sdk2py.core.channel import (
     ChannelFactoryInitialize,
@@ -24,6 +30,7 @@ from unitree_sdk2py.idl.default import (
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
+from viewer_backend import create_viewer_backend
 
 
 NET = "lo"
@@ -64,6 +71,7 @@ def log(message: str) -> None:
 class RuntimeConfig:
     robot: RobotModel
     net: str
+    viewer: str
     band_sites: tuple[str, ...]
     band_enabled: bool
 
@@ -105,9 +113,6 @@ class SimBridge:
         self.tick = 1
         self.mode_machine = 0
         self.mode_pr = 0
-        self.viewer = None
-        self.viewer_tick = 0
-        self.viewer_decim = max(1, SIM_HZ // RENDER_HZ)
         self.keys: set[str] = set()
         self.lock = threading.Lock()
         self.cmd_lock = threading.Lock()
@@ -116,6 +121,16 @@ class SimBridge:
         self.model = mujoco.MjModel.from_xml_path(str(self.config.robot.xml_path))
         self.model.opt.timestep = 1.0 / SIM_HZ
         self.data = mujoco.MjData(self.model)
+        # Viewer backend owns GUI/server lifecycle; the physics loop only calls sync().
+        self.viewer_backend = create_viewer_backend(
+            self.config.viewer,
+            self.config.robot,
+            self.model,
+            self.data,
+            sim_hz=SIM_HZ,
+            render_hz=RENDER_HZ,
+            log=log,
+        )
         self.num_motor = int(self.model.nu)
         # Actuator ctrlrange is the final safety clamp before writing data.ctrl.
         self.ctrl_lower = self.model.actuator_ctrlrange[:, 0].copy()
@@ -455,18 +470,7 @@ class SimBridge:
             self.odom_pub.Write(self.make_odom(qpos, qvel, gyro, acc))
             timer.sleep()
 
-    # ----- Viewer, simulation loop, and cleanup -----
-
-    def sync_viewer(self) -> bool:
-        if self.viewer is None:
-            return True
-        if not self.viewer.is_running():
-            self.alive = False
-            return False
-        self.viewer_tick += 1
-        if self.viewer_tick % self.viewer_decim == 0:
-            self.viewer.sync()
-        return True
+    # ----- Simulation loop and cleanup -----
 
     def simulate(self) -> None:
         timer = LoopTimer(SIM_HZ)
@@ -480,7 +484,8 @@ class SimBridge:
                 self.data.ctrl[:] = self.compute_ctrl()
                 mujoco.mj_step(self.model, self.data)
 
-            if not self.sync_viewer():
+            if not self.viewer_backend.sync():
+                self.alive = False
                 break
 
             steps += 1
@@ -500,21 +505,14 @@ class SimBridge:
             f"model={self.config.robot.xml_path}"
         )
         log(f"topics: lowcmd={LOWCMD_TOPIC}, lowstate={LOWSTATE_TOPIC}, odom={ODOM_TOPIC}")
-        log(f"sim={SIM_HZ}Hz state_pub={STATE_HZ}Hz")
+        log(f"sim={SIM_HZ}Hz state_pub={STATE_HZ}Hz viewer={self.config.viewer}")
         if self.band_on:
             log(f"suspension bands enabled at z={self.band_z:.3f} m")
 
         self.state_thread.start()
         self.keyboard_thread.start()
-        with mujoco.viewer.launch_passive(
-            self.model,
-            self.data,
-            show_left_ui=False,
-            show_right_ui=False,
-        ) as viewer:
-            self.viewer = viewer
-            self.simulate()
-            self.viewer = None
+        # Blocks until the selected viewer or simulation loop exits.
+        self.viewer_backend.run(self.simulate)
 
     def close(self, *_args) -> None:
         if self.alive:
@@ -550,6 +548,12 @@ def parse_args() -> RuntimeConfig:
     )
     parser.add_argument("--net", default=NET, help="DDS network interface.")
     parser.add_argument(
+        "--viewer",
+        choices=VIEWER_CHOICES,
+        default=DEFAULT_VIEWER,
+        help="Visualization backend: mujoco or mjswan.",
+    )
+    parser.add_argument(
         "--band-sites",
         default=",".join(BAND_SITES),
         help="Comma-separated MuJoCo site names used by the suspension bands.",
@@ -565,6 +569,7 @@ def parse_args() -> RuntimeConfig:
     return RuntimeConfig(
         robot=load_robot_model(args.robot, args.model_xml, args.terrain),
         net=args.net,
+        viewer=args.viewer,
         band_sites=band_sites,
         band_enabled=bool(args.band),
     )

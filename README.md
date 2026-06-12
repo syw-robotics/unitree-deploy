@@ -36,6 +36,12 @@ uv pip install -e .
 python sim_bridge.py --robot g1
 ```
 
+默认会打开当前 MuJoCo viewer。也可以选择浏览器端 mjswan viewer：
+```bash
+uv pip install -e /home/syw/.gitrepos/mjswan  # only needed for --viewer mjswan
+python sim_bridge.py --robot g1 --viewer mjswan
+```
+
 再启动 controller：
 ```bash
 python controller.py --mode sim --ckpt ckpt/g1/loco_flat

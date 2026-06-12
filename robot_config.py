@@ -10,6 +10,8 @@ from pathlib import Path
 
 DEFAULT_ROBOT = "g1"
 DEFAULT_TERRAIN = "flat"
+DEFAULT_VIEWER = "mujoco"
+VIEWER_CHOICES = ("mujoco", "mjswan")
 ROBOT_MODEL_ROOT = Path(__file__).parent / "robot_model"
 SCENE_ROOT = ROBOT_MODEL_ROOT / "scene"
 
