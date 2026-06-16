@@ -4,10 +4,11 @@
 
 policy_path: "policy.onnx"
 
-step_dt: 0.02
-physics_dt: 0.002
-decimation: 10
+policy_step_dt: 0.02
+physics_dt: 0.001
+decimation: 20
 
+# Training obs joint order
 obs_joint_order: [
   'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint', 
   'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint', 
@@ -24,6 +25,7 @@ sdk_joint_order: [
 
 ]
 
+# Default joint positions in sdk_joint_order.
 default_qpos: [
   # FR
   -0.1, 0.8, -1.5,
@@ -35,35 +37,56 @@ default_qpos: [
   0.1, 1.0, -1.5,
 ]
 
-policy_input_name: "policy"
-policy_output_name: "action"
+policy_input_name: "obs"
+policy_output_name: "actions"
+
+# Observation specs
+obs_use_scaled_prev_action: false
+obs_prime_on_reset: true
+obs_group_concat_mode: term_major
+observation_types:
+  base_ang_vel: "unitree_deploy.obs.observation:BaseAngularVelocityObservation"
+  projected_gravity: "unitree_deploy.obs.observation:ProjectedGravityObservation"
+  command: "unitree_deploy.obs.observation:CommandObservation"
+  joint_pos_rel: "unitree_deploy.obs.observation:JointPositionObservation"
+  joint_vel: "unitree_deploy.obs.observation:JointVelocityObservation"
+  prev_action: "unitree_deploy.obs.observation:PreviousActionObservation"
 
 observations:
-  - type: command
-    history_len: 5
-    command_range:
-      - [-0.35, 0.35]  # lin_vel_x
-      - [-0.4, 0.4]  # lin_vel_y
-      - [-0.75, 0.75]  # ang_vel_yaw
   - type: base_ang_vel
-    history_len: 5
+    history_len: 6
+    params:
+      scale: [0.25, 0.25, 0.25]
   - type: projected_gravity
-    history_len: 5
-  - type: joint_pos
-    history_len: 5
+    history_len: 6
+  - type: command
+    history_len: 6
+    command_range:
+      - [-1.0, 1.0]  # lin_vel_x
+      - [-0.5, 0.5]  # lin_vel_y
+      - [-2.0, 2.0]  # ang_vel_yaw
+  - type: joint_pos_rel
+    history_len: 6
   - type: joint_vel
-    history_len: 5
+    history_len: 6
+    params:
+      scale: 0.05
   - type: prev_action
-    history_len: 5
+    history_len: 6
+
 
 action_dim: 12
 action_clip: 10.0
+
+# Action joint order follows training action joint order.
 action_joint_order: [
   'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
   'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
   'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
   'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
 ]
+
+# Action scales in sdk_joint_order.
 action_scale: [
   # FR
   0.125, 0.25, 0.25,
@@ -75,7 +98,8 @@ action_scale: [
   0.125, 0.25, 0.25,
 ]
 
-kps_real: [
+# RUN_POLICY_STATE gains in sdk_joint_order.
+kp_policy: [
   # FR
   25.0, 25.0, 25.0,
   # FL
@@ -86,7 +110,7 @@ kps_real: [
   25.0, 25.0, 25.0,
 ]
 
-kds_real: [
+kd_policy: [
   # FR
   0.5, 0.5, 0.5,
   # FL
@@ -95,4 +119,39 @@ kds_real: [
   0.5, 0.5, 0.5,
   # RL
   0.5, 0.5, 0.5,
+]
+
+# MOVE_TO_DEFAULT_STATE gains in sdk_joint_order.
+kp_fixed_stand: [
+  # FR
+  50.0, 50.0, 50.0,
+  # FL
+  50.0, 50.0, 50.0,
+  # RR
+  50.0, 50.0, 50.0,
+  # RL
+  50.0, 50.0, 50.0,
+]
+
+kd_fixed_stand: [
+  # FR
+  1.0, 1.0, 1.0,
+  # FL
+  1.0, 1.0, 1.0,
+  # RR
+  1.0, 1.0, 1.0,
+  # RL
+  1.0, 1.0, 1.0,
+]
+
+# DAMPING_STATE damping gains in sdk_joint_order. kp is always zero in damping.
+kd_damping: [
+  # FR
+  1.0, 1.0, 1.0,
+  # FL
+  1.0, 1.0, 1.0,
+  # RR
+  1.0, 1.0, 1.0,
+  # RL
+  1.0, 1.0, 1.0,
 ]

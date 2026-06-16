@@ -8,3 +8,6 @@ stubs
 MUJOCO_LOG.TXT
 
 .vscode
+.codex
+.venv
+.agents

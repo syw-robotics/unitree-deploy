@@ -1,4 +1,4 @@
-from .base_policy import BasePolicy
+from .base_policy import BasePolicy, load_policy
 
-__all__ = ["BasePolicy"]
+__all__ = ["BasePolicy", "load_policy"]
 

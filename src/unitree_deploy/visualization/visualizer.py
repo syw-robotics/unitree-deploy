@@ -7,7 +7,6 @@ from pathlib import Path
 import mujoco
 import numpy as np
 import viser
-import yaml
 from unitree_deploy.config.defaults import DEFAULT_MODE, LOWSTATE_TOPIC, ODOM_TOPIC
 from unitree_deploy.robot_model.robot_config import DEFAULT_ROBOT, DEFAULT_TERRAIN, RobotModel, load_robot_model
 from unitree_deploy.visualization.scene_config import RealSenseCameraConfig, StandaloneMujocoScene
@@ -15,6 +14,8 @@ from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelSubscri
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 from unitree_sdk2py.utils.thread import RecurrentThread
+
+from ..utils.yaml_utils import load_yaml
 
 
 def log(message: str) -> None:
@@ -67,8 +68,7 @@ class RobotStateVisualizer:
         if not path.exists():
             log(f"no visualizer yaml found at {path}; using automatic joint mapping")
             return {}
-        with path.open("r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        return load_yaml(path)
 
     def Init(self) -> None:
         self.model = mujoco.MjModel.from_xml_path(str(self.config.robot.xml_path))

@@ -80,7 +80,7 @@ policy_path: "policy.onnx"
 # Only uncomment this if BasePolicy action post-processing is not enough.
 # policy_class: "custom_policy:CustomPolicy"
 
-step_dt: 0.02
+policy_step_dt: 0.02
 physics_dt: 0.002
 decimation: 10
 
@@ -121,8 +121,11 @@ action_dim: 0
 action_clip: 1.0
 action_scale: []
 
-kps_real: []
-kds_real: []
+kp_policy: []
+kd_policy: []
+kp_fixed_stand: []
+kd_fixed_stand: []
+kd_damping: []
 '''
 
 

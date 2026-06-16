@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 import mujoco
 import numpy as np
+from pynput import keyboard
 from unitree_deploy.config.defaults import (
     ACC_SENSOR_NAMES,
     BAND_CLEARANCE,
@@ -25,12 +26,10 @@ from unitree_deploy.config.defaults import (
     LOWCMD_TOPIC,
     LOWSTATE_TOPIC,
     ODOM_TOPIC,
-    REMOTE_STICK_SCALE,
     RENDER_HZ,
     SIM_HZ,
     SIM_REMOTE_BUTTON_KEYS,
     STATE_HZ,
-    sim_key_for_button,
 )
 from unitree_deploy.robot_model.robot_config import (
     DEFAULT_ROBOT,
@@ -40,7 +39,6 @@ from unitree_deploy.robot_model.robot_config import (
     RobotModel,
     load_robot_model,
 )
-from sshkeyboard import listen_keyboard, stop_listening
 from unitree_sdk2py.core.channel import (
     ChannelFactoryInitialize,
     ChannelPublisher,
@@ -59,6 +57,62 @@ from unitree_deploy.utils.viewer_backend import create_viewer_backend
 
 def log(message: str) -> None:
     print(f"[sim_bridge] {message}", flush=True)
+
+
+STICK_KEYS = frozenset("wasdqe")
+
+
+class KeyboardState:
+    def __init__(self) -> None:
+        self.pressed: set[str] = set()
+        self.lock = threading.Lock()
+        self.listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
+        self.control_handler = None
+
+    def _on_press(self, key) -> None:
+        try:
+            if hasattr(key, 'char') and key.char:
+                k = key.char.lower()
+            else:
+                k = str(key).replace('Key.', '').lower()
+        except AttributeError:
+            k = str(key).replace('Key.', '').lower()
+
+        with self.lock:
+            if k in STICK_KEYS or k in SIM_REMOTE_BUTTON_KEYS:
+                self.pressed.add(k)
+
+        if self.control_handler:
+            self.control_handler(k)
+
+    def _on_release(self, key) -> None:
+        try:
+            if hasattr(key, 'char') and key.char:
+                k = key.char.lower()
+            else:
+                k = str(key).replace('Key.', '').lower()
+        except AttributeError:
+            k = str(key).replace('Key.', '').lower()
+
+        with self.lock:
+            self.pressed.discard(k)
+
+    def start(self) -> None:
+        self.listener.start()
+
+    def stop(self) -> None:
+        self.listener.stop()
+
+    def stick_keys(self) -> set[str]:
+        with self.lock:
+            return self.pressed & STICK_KEYS
+
+    def active_keys(self) -> set[str]:
+        with self.lock:
+            return self.pressed.copy()
+
+    def set_control_handler(self, handler) -> None:
+        self.control_handler = handler
 
 
 @dataclass(frozen=True)
@@ -108,10 +162,9 @@ class SimBridge:
         self.tick = 1
         self.mode_machine = 0
         self.mode_pr = 0
-        self.keys: set[str] = set()
+        self.keyboard = KeyboardState()
         self.lock = threading.Lock()
         self.cmd_lock = threading.Lock()
-        self.keys_lock = threading.Lock()
 
         self.model = mujoco.MjModel.from_xml_path(str(self.config.robot.xml_path))
         self.model.opt.timestep = 1.0 / SIM_HZ
@@ -127,12 +180,15 @@ class SimBridge:
             log=log,
         )
         self.num_motor = int(self.model.nu)
+        self.motor_joint_ids = self.actuator_joint_ids()
+        self.motor_qposadr = self.model.jnt_qposadr[self.motor_joint_ids].astype(np.int64)
+        self.motor_dofadr = self.model.jnt_dofadr[self.motor_joint_ids].astype(np.int64)
         # Actuator ctrlrange is the final safety clamp before writing data.ctrl.
         self.ctrl_lower = self.model.actuator_ctrlrange[:, 0].copy()
         self.ctrl_upper = self.model.actuator_ctrlrange[:, 1].copy()
 
-        self.base_qpos = np.array([0.0, 0.0, BASE_HEIGHT, *BASE_QUAT], dtype=np.float64)
-        self.initial_joint_qpos = np.zeros(self.num_motor, dtype=np.float64)
+        self.initial_qpos = self.make_initial_qpos()
+        self.initial_joint_qpos = self.initial_qpos[self.motor_qposadr].copy()
         self.reset_sim(print_log=False)
 
         self.target_q = self.initial_joint_qpos.copy()
@@ -176,12 +232,40 @@ class SimBridge:
         self.lowcmd_sub.Init(self.on_lowcmd)
 
         self.state_thread = threading.Thread(target=self.publish_state_loop, daemon=False)
-        self.keyboard_thread = threading.Thread(target=self.keyboard_loop, daemon=True)
+
+        self.keyboard.set_control_handler(self.handle_control_key)
+        self.keyboard.start()
 
         signal.signal(signal.SIGINT, self.close)
         signal.signal(signal.SIGTERM, self.close)
 
     # ----- MuJoCo model lookup helpers -----
+
+    def actuator_joint_ids(self) -> np.ndarray:
+        joint_ids = np.zeros(self.num_motor, dtype=np.int32)
+        for i in range(self.num_motor):
+            trn_type = int(self.model.actuator_trntype[i])
+            if trn_type != int(mujoco.mjtTrn.mjTRN_JOINT):
+                name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, i)
+                raise ValueError(f"actuator {name or i!r} must use joint transmission")
+            joint_id = int(self.model.actuator_trnid[i, 0])
+            joint_type = int(self.model.jnt_type[joint_id])
+            if joint_type not in (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE)):
+                joint_name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_id)
+                raise ValueError(f"actuated joint {joint_name or joint_id!r} must be 1-DoF")
+            joint_ids[i] = joint_id
+        return joint_ids
+
+    def make_initial_qpos(self) -> np.ndarray:
+        home_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_KEY, "home")
+        if home_id < 0 and self.model.nkey == 1:
+            home_id = 0
+        if home_id >= 0:
+            return self.model.key_qpos[home_id].copy()
+
+        qpos = np.zeros(self.model.nq, dtype=np.float64)
+        qpos[:7] = np.array([0.0, 0.0, BASE_HEIGHT, *BASE_QUAT], dtype=np.float64)
+        return qpos
 
     def sensor_slice_by_id(self, sid: int, label: str, required: bool):
         adr = int(self.model.sensor_adr[sid])
@@ -249,8 +333,7 @@ class SimBridge:
 
     def reset_sim(self, print_log: bool = True) -> None:
         mujoco.mj_resetData(self.model, self.data)
-        self.data.qpos[:7] = self.base_qpos
-        self.data.qpos[7 : 7 + self.num_motor] = self.initial_joint_qpos
+        self.data.qpos[:] = self.initial_qpos
         self.data.qvel[:] = 0.0
         self.data.ctrl[:] = 0.0
         mujoco.mj_forward(self.model, self.data)
@@ -293,58 +376,20 @@ class SimBridge:
 
     # ----- Keyboard controls and virtual wireless remote -----
 
-    def keyboard_loop(self) -> None:
-        log(
-            f"keyboard: Up/Down band, n release band, {sim_key_for_button('X')} reset/X, "
-            f"{sim_key_for_button('A')} A, {sim_key_for_button('Start')} Start, "
-            "space pause/resume, wsad left stick, qe right stick x, esc quit"
-        )
-        try:
-            listen_keyboard(
-                on_press=self.on_key_press,
-                on_release=self.on_key_release,
-                until=None,
-                sequential=True,
-            )
-        except Exception as exc:
-            if self.alive:
-                log(f"keyboard stopped: {exc}")
-
-    def on_key_press(self, key: str) -> None:
-        key = key.lower()
-        if key == sim_key_for_button("A"):
-            self.resume_simulation()
-
-        with self.keys_lock:
-            first_press = key not in self.keys
-            self.keys.add(key)
-        if not first_press:
-            return
-
+    def handle_control_key(self, key: str) -> None:
         if key == "space":
             self.toggle_simulation_pause()
         elif key == "up":
             self.move_band(BAND_STEP)
         elif key == "down":
             self.move_band(-BAND_STEP)
-        elif key == "n":
-            self.band_on = False
-            log("suspension bands released")
-        elif key == sim_key_for_button("X"):
+        elif key == "b":
+            self.toggle_band()
+        elif key == "backspace":
             with self.lock:
                 self.reset_sim()
         elif key == "esc":
             self.close()
-
-    def on_key_release(self, key: str) -> None:
-        with self.keys_lock:
-            self.keys.discard(key.lower())
-
-    def resume_simulation(self) -> None:
-        if not self.simulation_paused:
-            return
-        self.simulation_paused = False
-        log("simulation resumed by A")
 
     def toggle_simulation_pause(self) -> None:
         self.simulation_paused = not self.simulation_paused
@@ -358,20 +403,30 @@ class SimBridge:
         self.band_anchors[:, 2] = self.band_z
         log(f"band height -> {self.band_z:.3f} m")
 
+    def toggle_band(self) -> None:
+        if not self.band_site_ids:
+            log("suspension bands unavailable")
+            return
+        self.band_on = not self.band_on
+        if self.band_on:
+            self.band_anchors[:, 2] = self.band_z
+            log(f"suspension bands restored at z={self.band_z:.3f} m")
+        else:
+            log("suspension bands released")
+
     def remote_bytes(self) -> list[int]:
         remote = bytearray(40)
-        with self.keys_lock:
-            keys = set(self.keys)
-        stick_keys = keys - set(SIM_REMOTE_BUTTON_KEYS)
+        keys = self.current_keys()
+        stick_keys = keys & STICK_KEYS
 
         # Match Unitree wireless_remote layout consumed by controller.RemoteCommand.
         for offset, value in zip(
             (4, 8, 12, 20),
             (
-                REMOTE_STICK_SCALE * ("a" in stick_keys) - REMOTE_STICK_SCALE * ("d" in stick_keys),
-                REMOTE_STICK_SCALE * ("q" in stick_keys) - REMOTE_STICK_SCALE * ("e" in stick_keys),
+                float("a" in stick_keys) - float("d" in stick_keys),
+                float("q" in stick_keys) - float("e" in stick_keys),
                 0.0,
-                REMOTE_STICK_SCALE * ("w" in stick_keys) - REMOTE_STICK_SCALE * ("s" in stick_keys),
+                float("w" in stick_keys) - float("s" in stick_keys),
             ),
         ):
             struct.pack_into("<f", remote, offset, value)
@@ -380,6 +435,19 @@ class SimBridge:
             if key in keys:
                 remote[byte_i] |= 1 << bit_i
         return list(remote)
+
+    def current_keys(self) -> set[str]:
+        return self.keyboard.active_keys()
+
+    def current_stick_keys(self) -> set[str]:
+        return self.keyboard.stick_keys()
+
+    def current_command(self) -> tuple[float, float, float]:
+        stick_keys = self.current_stick_keys()
+        lx = float("a" in stick_keys) - float("d" in stick_keys)
+        rx = float("q" in stick_keys) - float("e" in stick_keys)
+        ly = float("w" in stick_keys) - float("s" in stick_keys)
+        return ly, -lx, -rx
 
     # ----- Physics step helpers -----
 
@@ -407,8 +475,8 @@ class SimBridge:
 
     def compute_ctrl(self) -> np.ndarray:
         # PD target arrays are written by the DDS callback; this runs inside the MuJoCo step loop.
-        q = self.data.qpos[7 : 7 + self.num_motor]
-        dq = self.data.qvel[6 : 6 + self.num_motor]
+        q = self.data.qpos[self.motor_qposadr]
+        dq = self.data.qvel[self.motor_dofadr]
         with self.cmd_lock:
             self.ctrl[:] = (
                 self.kp * (self.target_q - q)
@@ -455,8 +523,8 @@ class SimBridge:
         msg.tick = int(self.tick)
 
         for i in range(self.num_motor):
-            msg.motor_state[i].q = float(qpos[7 + i])
-            msg.motor_state[i].dq = float(qvel[6 + i])
+            msg.motor_state[i].q = float(qpos[self.motor_qposadr[i]])
+            msg.motor_state[i].dq = float(qvel[self.motor_dofadr[i]])
             msg.motor_state[i].tau_est = float(ctrl[i])
 
         self.fill_imu(msg, qpos[3:7], gyro, acc)
@@ -470,8 +538,6 @@ class SimBridge:
         msg = unitree_go_msg_dds__SportModeState_()
         msg.position = qpos[:3].tolist()
         msg.velocity = qvel[:3].tolist()
-        msg.body_height = float(qpos[2])
-        msg.yaw_speed = float(gyro[2])
         self.fill_imu(msg, qpos[3:7], gyro, acc)
         return msg
 
@@ -507,10 +573,12 @@ class SimBridge:
             now = time.perf_counter()
             if now - last_log >= 1.0:
                 if self.simulation_paused:
-                    log(f"simulation paused; press {sim_key_for_button('A')} (virtual A) to start")
+                    log(f"simulation paused; press \"space\" to start")
                 else:
+                    command = self.current_command()
                     log(
                         f"t={steps / SIM_HZ:6.2f}s height={self.data.qpos[2]:.3f} "
+                        f"remote_cmd=({command[0]:+.2f}, {command[1]:+.2f}, {command[2]:+.2f}) "
                         f"cmd={'yes' if self.command_received else 'no'} "
                         f"band={'on' if self.band_on else 'off'}"
                     )
@@ -524,12 +592,11 @@ class SimBridge:
         )
         log(f"topics: lowcmd={LOWCMD_TOPIC}, lowstate={LOWSTATE_TOPIC}, odom={ODOM_TOPIC}")
         log(f"sim={SIM_HZ}Hz state_pub={STATE_HZ}Hz viewer={self.config.viewer}")
-        log(f"simulation starts paused; press {sim_key_for_button('A')} (virtual A) to continue")
+        log(f"simulation starts paused; press \"space\" to continue")
         if self.band_on:
             log(f"suspension bands enabled at z={self.band_z:.3f} m")
 
         self.state_thread.start()
-        self.keyboard_thread.start()
         # Blocks until the selected viewer or simulation loop exits.
         self.viewer_backend.run(self.simulate)
 
@@ -537,15 +604,10 @@ class SimBridge:
         if self.alive:
             log("shutting down...")
         self.alive = False
+        self.keyboard.stop()
 
-        try:
-            stop_listening()
-        except Exception:
-            pass
-
-        for thread in (self.keyboard_thread, self.state_thread):
-            if thread.is_alive() and threading.current_thread() is not thread:
-                thread.join(timeout=1.0)
+        if self.state_thread.is_alive() and threading.current_thread() is not self.state_thread:
+            self.state_thread.join(timeout=1.0)
 
     def cleanup(self) -> None:
         self.alive = False

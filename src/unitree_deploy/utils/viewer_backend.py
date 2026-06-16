@@ -46,6 +46,10 @@ class MujocoViewerBackend:
             show_right_ui=False,
         ) as viewer:
             self.viewer = viewer
+            viewer.cam.lookat[:] = (0.0, 0.0, 0.85)
+            viewer.cam.distance = 2.0
+            viewer.cam.elevation = -15.0
+            viewer.cam.azimuth = 20.0
             simulate()
             self.viewer = None
 
@@ -104,10 +108,10 @@ class MjswanViewerBackend:
         )
         scene.set_viewer_config(
             mjswan.ViewerConfig(
-                lookat=(0.0, 0.0, 0.8),
-                distance=4.0,
-                elevation=-25.0,
-                azimuth=45.0,
+                lookat=(0.0, 0.0, 0.85),
+                distance=2.0,
+                elevation=-15.0,
+                azimuth=20.0,
                 origin_type=mjswan.ViewerConfig.OriginType.WORLD,
             )
         )
@@ -127,7 +131,12 @@ def create_viewer_backend(
     log: Callable[[str], None],
 ) -> ViewerBackend:
     if viewer == "mujoco":
-        return MujocoViewerBackend(model, data, sim_hz=sim_hz, render_hz=render_hz)
+        return MujocoViewerBackend(
+            model,
+            data,
+            sim_hz=sim_hz,
+            render_hz=render_hz,
+        )
     if viewer == "mjswan":
         return MjswanViewerBackend(robot, log=log)
     raise ValueError(f"unsupported viewer backend: {viewer}")
