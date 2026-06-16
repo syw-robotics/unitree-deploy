@@ -8,9 +8,22 @@ from pathlib import Path
 
 import numpy as np
 import yaml
-from policy.observation import ObservationContext
-from policy.base_policy import BasePolicy
-from robot_config import DEFAULT_ROBOT
+from unitree_deploy.config.defaults import (
+    DEFAULT_MODE,
+    DEFAULT_NET,
+    DEFAULT_QPOS_STATE,
+    LOWCMD_TOPIC,
+    LOWSTATE_TOPIC,
+    MOVE_TO_DEFAULT_STATE,
+    MOVE_TO_DEFAULT_TIME,
+    RUN_POLICY_STATE,
+    WIRELESS_REMOTE_BUTTON_BITS,
+    ZERO_TORQUE_STATE,
+    sim_key_for_button,
+)
+from unitree_deploy.obs.observation import ObservationContext
+from unitree_deploy.policy.loader import load_policy
+from unitree_deploy.robot_model.robot_config import DEFAULT_ROBOT
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 from unitree_sdk2py.core.channel import (
     ChannelFactoryInitialize,
@@ -20,24 +33,6 @@ from unitree_sdk2py.core.channel import (
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
-
-
-LOWCMD_TOPIC = "rt/lowcmd"
-LOWSTATE_TOPIC = "rt/lowstate"
-LOCAL_NET = "lo"
-MODE = "sim"
-MOVE_TO_DEFAULT_TIME = 2.0
-
-ZERO_TORQUE = "zero_torque_state"
-MOVE_TO_DEFAULT = "move_to_default_qpos"
-DEFAULT_QPOS = "default_qpos_state"
-RUN_POLICY = "run_policy"
-
-BUTTON_BITS = {
-    "Start": (2, 2),
-    "A": (3, 0),
-    "X": (3, 2),
-}
 
 
 def log(message: str) -> None:
@@ -69,7 +64,7 @@ class RuntimeConfig:
 class RemoteCommand:
     def __init__(self) -> None:
         self.lx = self.ly = self.rx = self.ry = 0.0
-        self.buttons = {name: False for name in BUTTON_BITS}
+        self.buttons = {name: False for name in WIRELESS_REMOTE_BUTTON_BITS}
         self.pressed_edges: set[str] = set()
 
     def set(self, wireless_remote) -> None:
@@ -79,7 +74,7 @@ class RemoteCommand:
         self.ry = struct.unpack("<f", payload[12:16])[0]
         self.ly = struct.unpack("<f", payload[20:24])[0]
 
-        for name, (byte_i, bit_i) in BUTTON_BITS.items():
+        for name, (byte_i, bit_i) in WIRELESS_REMOTE_BUTTON_BITS.items():
             pressed = bool((int(wireless_remote[byte_i]) >> bit_i) & 1)
             if pressed and not self.buttons[name]:
                 self.pressed_edges.add(name)
@@ -103,30 +98,26 @@ class Controller:
         self.config = config
         self.ckpt_dir = config.ckpt_dir.resolve()
         self.cfg = self.load_yaml(self.ckpt_dir / "controller.yaml")
-        self.policy = BasePolicy(self.ckpt_dir / "policy.yaml")
+        self.policy = load_policy(self.ckpt_dir / "policy.yaml")
         self.robot = config.robot or self.cfg.get("robot", DEFAULT_ROBOT)
 
         self.lowcmd_topic = self.cfg.get("lowcmd_topic", LOWCMD_TOPIC)
         self.lowstate_topic = self.cfg.get("lowstate_topic", LOWSTATE_TOPIC)
-        self.real_joint_names = list(self.cfg["real_joint_names"])
-        self.policy_joint_names = list(self.cfg["isaac_joint_names_state"])
-        # "raw" is the order used by the active backend: MuJoCo in sim, DDS motor order on real hardware.
-        # The policy always sees the Isaac training order.
-        raw_key = "mujoco_joint_names" if config.mode == "sim" else "real_joint_names"
-        self.raw_joint_names = list(self.cfg[raw_key])
-        self.num_joints = len(self.raw_joint_names)
+        self.sdk_joint_order = list(self.policy.sdk_joint_order)
+        self.obs_joint_order = list(self.policy.obs_joint_order)
+        self.num_joints = len(self.sdk_joint_order)
         self.check_joint_config()
 
-        self.raw_to_policy = self.reorder_indices(self.raw_joint_names, self.policy_joint_names)
-        self.policy_to_raw = self.reorder_indices(self.policy_joint_names, self.raw_joint_names)
-        self.kp = self.gain_array("kps_real")
-        self.kd = self.gain_array("kds_real")
+        self.sdk_to_obs = self.reorder_indices(self.sdk_joint_order, self.obs_joint_order)
+        self.obs_to_sdk = self.reorder_indices(self.obs_joint_order, self.sdk_joint_order)
+        self.kp = self.kpkd_array("kps_real")
+        self.kd = self.kpkd_array("kds_real")
         self.zero = np.zeros(self.num_joints, dtype=np.float64)
         self.zero_torque_kd = np.ones(self.num_joints, dtype=np.float64)
-        self.default_q_policy = self.policy.default_joint_pos
-        self.default_q_raw = self.default_q_policy[self.policy_to_raw]
-        self.target_policy = np.zeros(self.num_joints, dtype=np.float64)
-        self.target_raw = np.zeros(self.num_joints, dtype=np.float64)
+        self.default_q_obs = self.policy.default_joint_pos
+        self.default_q_sdk = self.default_q_obs[self.obs_to_sdk]
+        self.target_obs = np.zeros(self.num_joints, dtype=np.float64)
+        self.target_sdk = np.zeros(self.num_joints, dtype=np.float64)
 
         self.lock = threading.Lock()
         self.alive = True
@@ -134,13 +125,13 @@ class Controller:
         self.has_low_state = False
         self.mode_machine = 0
         self.mode_pr = 0
-        self.state = ZERO_TORQUE
+        self.state = ZERO_TORQUE_STATE
         self.state_enter_t = time.perf_counter()
 
         self.q = np.zeros(self.num_joints, dtype=np.float64)
         self.dq = np.zeros(self.num_joints, dtype=np.float64)
-        self.q_policy = np.zeros(self.num_joints, dtype=np.float64)
-        self.dq_policy = np.zeros(self.num_joints, dtype=np.float64)
+        self.q_obs = np.zeros(self.num_joints, dtype=np.float64)
+        self.dq_obs = np.zeros(self.num_joints, dtype=np.float64)
         self.move_start_q = np.zeros(self.num_joints, dtype=np.float64)
         self.quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.gyro = np.zeros(3, dtype=np.float64)
@@ -173,10 +164,17 @@ class Controller:
         return np.asarray([source_index[name] for name in target], dtype=np.int64)
 
     def check_joint_config(self) -> None:
-        if len(self.policy_joint_names) != self.num_joints:
+        if len(self.obs_joint_order) != self.num_joints:
             raise ValueError(
-                f"joint count mismatch: {len(self.policy_joint_names)} policy joints, "
-                f"{self.num_joints} raw joints"
+                f"joint count mismatch: {len(self.obs_joint_order)} obs joints, "
+                f"{self.num_joints} sdk joints"
+            )
+        if set(self.obs_joint_order) != set(self.sdk_joint_order):
+            missing_in_sdk = sorted(set(self.obs_joint_order) - set(self.sdk_joint_order))
+            missing_in_obs = sorted(set(self.sdk_joint_order) - set(self.obs_joint_order))
+            raise ValueError(
+                f"obs_joint_order and sdk_joint_order must contain the same joints; "
+                f"missing_in_sdk={missing_in_sdk}, missing_in_obs={missing_in_obs}"
             )
         if len(self.policy.default_joint_pos) != self.num_joints:
             raise ValueError(
@@ -184,14 +182,15 @@ class Controller:
                 f"controller has {self.num_joints}"
             )
 
-    def gain_array(self, key: str) -> np.ndarray:
+    def kpkd_array(self, key: str) -> np.ndarray:
         values = np.asarray(self.cfg[key], dtype=np.float64).reshape(-1)
-        by_name = dict(zip(self.real_joint_names, values))
-        return np.asarray([by_name[name] for name in self.raw_joint_names], dtype=np.float64)
+        if values.size != self.num_joints:
+            raise ValueError(f"{key} has {values.size} values, expected {self.num_joints}")
+        return values
 
-    def write_policy_to_raw(self, value: np.ndarray) -> np.ndarray:
-        np.take(value, self.policy_to_raw, out=self.target_raw)
-        return self.target_raw
+    def write_obs_to_sdk(self, value: np.ndarray) -> np.ndarray:
+        np.take(value, self.obs_to_sdk, out=self.target_sdk)
+        return self.target_sdk
 
     # ----- Real-robot setup -----
 
@@ -220,8 +219,8 @@ class Controller:
                 self.q[i] = float(state.q)
                 self.dq[i] = float(state.dq)
 
-            np.take(self.q, self.raw_to_policy, out=self.q_policy)
-            np.take(self.dq, self.raw_to_policy, out=self.dq_policy)
+            np.take(self.q, self.sdk_to_obs, out=self.q_obs)
+            np.take(self.dq, self.sdk_to_obs, out=self.dq_obs)
             self.quat[:] = np.asarray(msg.imu_state.quaternion[:4], dtype=np.float64)
             self.gyro[:] = np.asarray(msg.imu_state.gyroscope[:3], dtype=np.float64)
             self.remote.set(msg.wireless_remote)
@@ -231,8 +230,8 @@ class Controller:
     def observation(self) -> ObservationContext:
         with self.lock:
             return ObservationContext(
-                q=self.q_policy.copy(),
-                dq=self.dq_policy.copy(),
+                q=self.q_obs.copy(),
+                dq=self.dq_obs.copy(),
                 quat=self.quat.copy(),
                 gyro=self.gyro.copy(),
                 command=self.command.copy(),
@@ -250,9 +249,9 @@ class Controller:
         self.state = state
         self.state_enter_t = time.perf_counter()
         self.policy.reset()
-        if state == MOVE_TO_DEFAULT:
+        if state == MOVE_TO_DEFAULT_STATE:
             with self.lock:
-                self.move_start_q[:] = self.q_policy
+                self.move_start_q[:] = self.q_obs
         log(f"state -> {state}")
 
     # ----- DDS output -----
@@ -294,7 +293,7 @@ class Controller:
 
     def step_zero_torque(self) -> None:
         if self.consume_button("A"):
-            self.transition(MOVE_TO_DEFAULT)
+            self.transition(MOVE_TO_DEFAULT_STATE)
             return
 
         with self.lock:
@@ -303,7 +302,7 @@ class Controller:
 
     def step_move_to_default(self) -> None:
         if self.consume_button("X"):
-            self.transition(ZERO_TORQUE)
+            self.transition(ZERO_TORQUE_STATE)
             return
 
         ratio = np.clip(
@@ -311,42 +310,42 @@ class Controller:
             0.0,
             1.0,
         )
-        self.target_policy[:] = self.default_q_policy
-        self.target_policy -= self.move_start_q
-        self.target_policy *= ratio
-        self.target_policy += self.move_start_q
-        self.send_joint_cmd(self.write_policy_to_raw(self.target_policy), self.kp, self.kd)
+        self.target_obs[:] = self.default_q_obs
+        self.target_obs -= self.move_start_q
+        self.target_obs *= ratio
+        self.target_obs += self.move_start_q
+        self.send_joint_cmd(self.write_obs_to_sdk(self.target_obs), self.kp, self.kd)
 
         if ratio >= 1.0:
-            self.transition(DEFAULT_QPOS)
+            self.transition(DEFAULT_QPOS_STATE)
 
     def step_default_qpos(self) -> None:
         if self.consume_button("X"):
-            self.transition(ZERO_TORQUE)
+            self.transition(ZERO_TORQUE_STATE)
             return
         if self.consume_button("Start"):
-            self.transition(RUN_POLICY)
+            self.transition(RUN_POLICY_STATE)
             return
 
-        self.send_joint_cmd(self.default_q_raw, self.kp, self.kd)
+        self.send_joint_cmd(self.default_q_sdk, self.kp, self.kd)
 
     def step_policy(self) -> None:
         if self.consume_button("X"):
-            self.transition(ZERO_TORQUE)
+            self.transition(ZERO_TORQUE_STATE)
             return
 
         # Policy returns targets in policy order; LowCmd must be written in raw motor order.
-        target_policy = self.policy.compute_target_q(self.observation())
-        self.send_joint_cmd(self.write_policy_to_raw(target_policy), self.kp, self.kd)
+        target_obs = self.policy.compute_target_q(self.observation())
+        self.send_joint_cmd(self.write_obs_to_sdk(target_obs), self.kp, self.kd)
 
     def step(self) -> None:
-        if self.state == ZERO_TORQUE:
+        if self.state == ZERO_TORQUE_STATE:
             self.step_zero_torque()
-        elif self.state == MOVE_TO_DEFAULT:
+        elif self.state == MOVE_TO_DEFAULT_STATE:
             self.step_move_to_default()
-        elif self.state == DEFAULT_QPOS:
+        elif self.state == DEFAULT_QPOS_STATE:
             self.step_default_qpos()
-        elif self.state == RUN_POLICY:
+        elif self.state == RUN_POLICY_STATE:
             self.step_policy()
 
     # ----- Main loop and cleanup -----
@@ -357,7 +356,11 @@ class Controller:
             f"topics: lowstate={self.lowstate_topic}, lowcmd={self.lowcmd_topic}"
         )
         if self.config.mode == "sim":
-            log("sim keymap: b->A, m->Start, r->X + reset sim state")
+            log(
+                f"sim keymap: {sim_key_for_button('A')}->A, "
+                f"{sim_key_for_button('Start')}->Start, "
+                f"{sim_key_for_button('X')}->X + reset sim state"
+            )
         log("A: zero torque -> default pose, Start: default pose -> run policy, X: back to zero torque")
         log("waiting for lowstate...")
 
@@ -394,8 +397,8 @@ class Controller:
 
 def parse_args() -> RuntimeConfig:
     parser = argparse.ArgumentParser(description="Reusable Unitree controller for sim or real robot.")
-    parser.add_argument("--mode", choices=("real", "sim"), default=MODE)
-    parser.add_argument("--net", default=LOCAL_NET, help="DDS network interface. Use lo for local sim.")
+    parser.add_argument("--mode", choices=("real", "sim"), default=DEFAULT_MODE)
+    parser.add_argument("--net", default=DEFAULT_NET, help="DDS network interface. Use lo for local sim.")
     parser.add_argument("--robot", help="Robot name for logs. Defaults to controller.yaml robot.")
     parser.add_argument("--ckpt", type=Path, help="Checkpoint directory containing controller.yaml and policy.yaml.")
     parser.add_argument("--deploy-yaml", type=Path, help="Compatibility alias: use the parent directory as --ckpt.")
@@ -412,7 +415,7 @@ def parse_args() -> RuntimeConfig:
     )
 
 
-if __name__ == "__main__":
+def main() -> None:
     config = parse_args()
 
     if config.mode == "real":
@@ -429,3 +432,7 @@ if __name__ == "__main__":
         controller.spin()
     finally:
         controller.cleanup()
+
+
+if __name__ == "__main__":
+    main()

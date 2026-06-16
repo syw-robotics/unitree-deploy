@@ -21,7 +21,6 @@ def _normalize_quaternion(quat) -> np.ndarray:
     norm = float(np.linalg.norm(quat_array))
     return quat_array / norm
 
-
 def _quat_to_body_gravity(quat) -> np.ndarray:
     # Equivalent to R(q).T @ [0, 0, -1], written directly to avoid building a matrix per step.
     w, x, y, z = _normalize_quaternion(quat)
@@ -96,7 +95,7 @@ class ProjectedGravityObservation(ObservationBase):
         return _quat_to_body_gravity(context.quat).astype(self.dtype, copy=False)
 
 
-class RootAngularVelocityObservation(ObservationBase):
+class BaseAngularVelocityObservation(ObservationBase):
     def __init__(self, *, history_len: int, dtype=np.float32) -> None:
         super().__init__(base_dim=3, history_len=history_len, dtype=dtype)
 

@@ -12,7 +12,7 @@ DEFAULT_ROBOT = "g1"
 DEFAULT_TERRAIN = "flat"
 DEFAULT_VIEWER = "mujoco"
 VIEWER_CHOICES = ("mujoco", "mjswan")
-ROBOT_MODEL_ROOT = Path(__file__).parent / "robot_model"
+ROBOT_MODEL_ROOT = Path(__file__).parent
 SCENE_ROOT = ROBOT_MODEL_ROOT / "scene"
 
 
@@ -32,7 +32,9 @@ def available_robots() -> list[str]:
     if not ROBOT_MODEL_ROOT.exists():
         return []
     return sorted(
-        path.name for path in ROBOT_MODEL_ROOT.iterdir() if path.is_dir() and path.name != "scene"
+        path.name
+        for path in ROBOT_MODEL_ROOT.iterdir()
+        if path.is_dir() and path.name != "scene" and not path.name.startswith("__")
     )
 
 

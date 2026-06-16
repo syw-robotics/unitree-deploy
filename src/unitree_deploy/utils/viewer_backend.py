@@ -9,10 +9,8 @@ from typing import Protocol
 import mujoco
 import mujoco.viewer
 
-from robot_config import RobotModel
-
-
-MJSWAN_PORT = 1234
+from unitree_deploy.config.defaults import MJSWAN_PORT
+from unitree_deploy.robot_model.robot_config import RobotModel
 
 
 class ViewerBackend(Protocol):

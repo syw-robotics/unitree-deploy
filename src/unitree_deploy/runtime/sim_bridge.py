@@ -8,7 +8,31 @@ from dataclasses import dataclass
 
 import mujoco
 import numpy as np
-from robot_config import (
+from unitree_deploy.config.defaults import (
+    ACC_SENSOR_NAMES,
+    BAND_CLEARANCE,
+    BAND_DAMPING,
+    BAND_MAX_FORCE,
+    BAND_MAX_Z,
+    BAND_MIN_Z,
+    BAND_SITES,
+    BAND_STEP,
+    BAND_STIFFNESS,
+    BASE_HEIGHT,
+    BASE_QUAT,
+    DEFAULT_NET,
+    GYRO_SENSOR_NAMES,
+    LOWCMD_TOPIC,
+    LOWSTATE_TOPIC,
+    ODOM_TOPIC,
+    REMOTE_STICK_SCALE,
+    RENDER_HZ,
+    SIM_HZ,
+    SIM_REMOTE_BUTTON_KEYS,
+    STATE_HZ,
+    sim_key_for_button,
+)
+from unitree_deploy.robot_model.robot_config import (
     DEFAULT_ROBOT,
     DEFAULT_TERRAIN,
     DEFAULT_VIEWER,
@@ -30,37 +54,7 @@ from unitree_sdk2py.idl.default import (
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
-from viewer_backend import create_viewer_backend
-
-
-NET = "lo"
-LOWCMD_TOPIC = "rt/lowcmd"
-LOWSTATE_TOPIC = "rt/lowstate"
-ODOM_TOPIC = "rt/odommodestate"
-
-SIM_HZ = 500
-STATE_HZ = 200
-RENDER_HZ = 30
-BASE_HEIGHT = 1.0
-BASE_QUAT = np.array([0.70710678, 0.0, 0.0, 0.70710678], dtype=np.float64)
-GYRO_SENSOR_NAMES = ("imu_ang_vel", "imu_gyro")
-ACC_SENSOR_NAMES = ("imu_lin_acc", "imu_acc")
-
-BAND_SITES = ("left_gantry_attach_point", "right_gantry_attach_point")
-BAND_CLEARANCE = 0.10
-BAND_STIFFNESS = 400.0
-BAND_DAMPING = 40.0
-BAND_STEP = 0.1
-BAND_MIN_Z = 0.8
-BAND_MAX_Z = 2.2
-BAND_MAX_FORCE = 400.0
-
-STICK = 1.0
-REMOTE_BUTTONS = {
-    "b": (3, 0),  # A
-    "r": (3, 2),  # X
-    "m": (2, 2),  # Start
-}
+from unitree_deploy.utils.viewer_backend import create_viewer_backend
 
 
 def log(message: str) -> None:
@@ -110,6 +104,7 @@ class SimBridge:
         self.config = config
         self.alive = True
         self.command_received = False
+        self.simulation_paused = True
         self.tick = 1
         self.mode_machine = 0
         self.mode_pr = 0
@@ -300,8 +295,9 @@ class SimBridge:
 
     def keyboard_loop(self) -> None:
         log(
-            "keyboard: Up/Down band, n release band, r reset/X, b A, m Start, "
-            "wsad left stick, qe right stick x, esc quit"
+            f"keyboard: Up/Down band, n release band, {sim_key_for_button('X')} reset/X, "
+            f"{sim_key_for_button('A')} A, {sim_key_for_button('Start')} Start, "
+            "space pause/resume, wsad left stick, qe right stick x, esc quit"
         )
         try:
             listen_keyboard(
@@ -316,20 +312,25 @@ class SimBridge:
 
     def on_key_press(self, key: str) -> None:
         key = key.lower()
+        if key == sim_key_for_button("A"):
+            self.resume_simulation()
+
         with self.keys_lock:
             first_press = key not in self.keys
             self.keys.add(key)
         if not first_press:
             return
 
-        if key == "up":
+        if key == "space":
+            self.toggle_simulation_pause()
+        elif key == "up":
             self.move_band(BAND_STEP)
         elif key == "down":
             self.move_band(-BAND_STEP)
         elif key == "n":
             self.band_on = False
             log("suspension bands released")
-        elif key == "r":
+        elif key == sim_key_for_button("X"):
             with self.lock:
                 self.reset_sim()
         elif key == "esc":
@@ -338,6 +339,17 @@ class SimBridge:
     def on_key_release(self, key: str) -> None:
         with self.keys_lock:
             self.keys.discard(key.lower())
+
+    def resume_simulation(self) -> None:
+        if not self.simulation_paused:
+            return
+        self.simulation_paused = False
+        log("simulation resumed by A")
+
+    def toggle_simulation_pause(self) -> None:
+        self.simulation_paused = not self.simulation_paused
+        state = "paused" if self.simulation_paused else "resumed"
+        log(f"simulation {state} by space")
 
     def move_band(self, dz: float) -> None:
         if not self.band_on:
@@ -350,20 +362,21 @@ class SimBridge:
         remote = bytearray(40)
         with self.keys_lock:
             keys = set(self.keys)
+        stick_keys = keys - set(SIM_REMOTE_BUTTON_KEYS)
 
         # Match Unitree wireless_remote layout consumed by controller.RemoteCommand.
         for offset, value in zip(
             (4, 8, 12, 20),
             (
-                STICK * ("a" in keys) - STICK * ("d" in keys),
-                STICK * ("q" in keys) - STICK * ("e" in keys),
+                REMOTE_STICK_SCALE * ("a" in stick_keys) - REMOTE_STICK_SCALE * ("d" in stick_keys),
+                REMOTE_STICK_SCALE * ("q" in stick_keys) - REMOTE_STICK_SCALE * ("e" in stick_keys),
                 0.0,
-                STICK * ("w" in keys) - STICK * ("s" in keys),
+                REMOTE_STICK_SCALE * ("w" in stick_keys) - REMOTE_STICK_SCALE * ("s" in stick_keys),
             ),
         ):
             struct.pack_into("<f", remote, offset, value)
 
-        for key, (byte_i, bit_i) in REMOTE_BUTTONS.items():
+        for key, (byte_i, bit_i) in SIM_REMOTE_BUTTON_KEYS.items():
             if key in keys:
                 remote[byte_i] |= 1 << bit_i
         return list(remote)
@@ -478,24 +491,29 @@ class SimBridge:
         steps = 0
 
         while self.alive:
-            with self.lock:
-                self.data.qfrc_applied[:] = 0.0
-                self.apply_band()
-                self.data.ctrl[:] = self.compute_ctrl()
-                mujoco.mj_step(self.model, self.data)
+            if not self.simulation_paused:
+                with self.lock:
+                    self.data.qfrc_applied[:] = 0.0
+                    self.apply_band()
+                    self.data.ctrl[:] = self.compute_ctrl()
+                    mujoco.mj_step(self.model, self.data)
 
             if not self.viewer_backend.sync():
                 self.alive = False
                 break
 
-            steps += 1
+            if not self.simulation_paused:
+                steps += 1
             now = time.perf_counter()
             if now - last_log >= 1.0:
-                log(
-                    f"t={steps / SIM_HZ:6.2f}s height={self.data.qpos[2]:.3f} "
-                    f"cmd={'yes' if self.command_received else 'no'} "
-                    f"band={'on' if self.band_on else 'off'}"
-                )
+                if self.simulation_paused:
+                    log(f"simulation paused; press {sim_key_for_button('A')} (virtual A) to start")
+                else:
+                    log(
+                        f"t={steps / SIM_HZ:6.2f}s height={self.data.qpos[2]:.3f} "
+                        f"cmd={'yes' if self.command_received else 'no'} "
+                        f"band={'on' if self.band_on else 'off'}"
+                    )
                 last_log = now
             timer.sleep()
 
@@ -506,6 +524,7 @@ class SimBridge:
         )
         log(f"topics: lowcmd={LOWCMD_TOPIC}, lowstate={LOWSTATE_TOPIC}, odom={ODOM_TOPIC}")
         log(f"sim={SIM_HZ}Hz state_pub={STATE_HZ}Hz viewer={self.config.viewer}")
+        log(f"simulation starts paused; press {sim_key_for_button('A')} (virtual A) to continue")
         if self.band_on:
             log(f"suspension bands enabled at z={self.band_z:.3f} m")
 
@@ -546,7 +565,7 @@ def parse_args() -> RuntimeConfig:
         default=DEFAULT_TERRAIN,
         help="Terrain name under robot_model/scene or XML path.",
     )
-    parser.add_argument("--net", default=NET, help="DDS network interface.")
+    parser.add_argument("--net", default=DEFAULT_NET, help="DDS network interface.")
     parser.add_argument(
         "--viewer",
         choices=VIEWER_CHOICES,
@@ -575,7 +594,7 @@ def parse_args() -> RuntimeConfig:
     )
 
 
-if __name__ == "__main__":
+def main() -> None:
     config = parse_args()
     ChannelFactoryInitialize(0, config.net)
     bridge = SimBridge(config)
@@ -584,3 +603,7 @@ if __name__ == "__main__":
     finally:
         bridge.close()
         bridge.cleanup()
+
+
+if __name__ == "__main__":
+    main()
