@@ -37,7 +37,7 @@ WIRELESS_REMOTE_BUTTON_BITS = {
 SIM_REMOTE_BUTTON_KEYS = {
     "enter": WIRELESS_REMOTE_BUTTON_BITS["A"],
     "x": WIRELESS_REMOTE_BUTTON_BITS["X"],
-    "tab": WIRELESS_REMOTE_BUTTON_BITS["Start"],
+    "\\": WIRELESS_REMOTE_BUTTON_BITS["Start"],
 }
 def sim_key_for_button(button: str) -> str:
     target_bit = WIRELESS_REMOTE_BUTTON_BITS[button]
@@ -51,6 +51,3 @@ MOVE_TO_DEFAULT_TIME = 2.0
 DAMPING_STATE = "damped"
 MOVE_TO_DEFAULT_STATE = "move_to_default_qpos"
 RUN_POLICY_STATE = "run_policy"
-
-# ---------- Mujoco Swan Port ----------
-MJSWAN_PORT = 1234

@@ -7,6 +7,16 @@ initial_base:
   pos: [0.0, 0.0, 0.8]
   quat: [1.0, 0.0, 0.0, 0.0]
 
+# Dedicated to the sim2sim MuJoCo viewer initial camera.
+viewer:
+  camera:
+    lookat: [0.0, 0.0, 0.85]
+    distance: 2.0
+    elevation: -15.0
+    azimuth: 20.0
+    track_body: base_link
+    track_offset: [0.0, 0.0, 0.0]
+
 # Order of LowState.motor_state for Unitree quadrupeds.
 state_joint_names:
   - FR_hip_joint

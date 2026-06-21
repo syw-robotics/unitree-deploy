@@ -393,9 +393,9 @@ class Controller:
         )
         if self.config.mode == "sim":
             log(
-                f"sim keymap: {sim_key_for_button('A')}->A, "
-                f"{sim_key_for_button('Start')}->Start, "
-                f"{sim_key_for_button('X')}->X damping, backspace->reset sim"
+                f"sim keymap: {sim_key_for_button('A')} -> A, "
+                f"{sim_key_for_button('Start')} -> Start, "
+                f"{sim_key_for_button('X')} -> Damping, R -> reset sim"
             )
         log("A: zero torque -> default pose, Start: default pose -> run policy, X: back to zero torque")
         log("waiting for lowstate...")

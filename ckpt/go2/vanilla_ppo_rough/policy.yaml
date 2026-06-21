@@ -1,5 +1,5 @@
 #
-# LocoLab DreamWaQ Rough Terrain Locomotion Policy
+# Vanilla PPO Rough Terrain Locomotion Policy
 #
 
 policy_path: "policy.onnx"
@@ -54,25 +54,25 @@ observation_types:
 
 observations:
   - type: base_ang_vel
-    history_len: 6
+    history_len: 5
     params:
       scale: [0.25, 0.25, 0.25]
   - type: projected_gravity
-    history_len: 6
+    history_len: 5
   - type: command
-    history_len: 6
+    history_len: 5
     command_range:
       - [-1.0, 1.0]  # lin_vel_x
       - [-0.5, 0.5]  # lin_vel_y
       - [-2.0, 2.0]  # ang_vel_yaw
   - type: joint_pos_rel
-    history_len: 6
+    history_len: 5
   - type: joint_vel
-    history_len: 6
+    history_len: 5
     params:
       scale: 0.05
   - type: prev_action
-    history_len: 6
+    history_len: 5
 
 
 action_dim: 12

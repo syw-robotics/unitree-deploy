@@ -385,7 +385,7 @@ class SimBridge:
             self.move_band(-BAND_STEP)
         elif key == "b":
             self.toggle_band()
-        elif key == "backspace":
+        elif key == "r":
             with self.lock:
                 self.reset_sim()
         elif key == "esc":
@@ -423,8 +423,8 @@ class SimBridge:
         for offset, value in zip(
             (4, 8, 12, 20),
             (
-                float("a" in stick_keys) - float("d" in stick_keys),
-                float("q" in stick_keys) - float("e" in stick_keys),
+                float("d" in stick_keys) - float("a" in stick_keys),
+                float("e" in stick_keys) - float("q" in stick_keys),
                 0.0,
                 float("w" in stick_keys) - float("s" in stick_keys),
             ),
@@ -632,7 +632,7 @@ def parse_args() -> RuntimeConfig:
         "--viewer",
         choices=VIEWER_CHOICES,
         default=DEFAULT_VIEWER,
-        help="Visualization backend: mujoco or mjswan.",
+        help="Visualization backend.",
     )
     parser.add_argument(
         "--band-sites",

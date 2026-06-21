@@ -1,10 +1,5 @@
 <mujoco model="rough_terrain">
-  <asset>
-    <texture type="skybox" builtin="flat" rgb1="0 0 0" rgb2="0 0 0" width="512" height="3072"/>
-    <texture type="2d" name="rough_groundplane" builtin="checker" mark="edge" rgb1="0.23 0.25 0.24" rgb2="0.12 0.14 0.13" markrgb="0.65 0.65 0.65" width="300" height="300"/>
-    <material name="rough_groundplane" texture="rough_groundplane" texuniform="true" texrepeat="6 6" reflectance="0.12"/>
-    <material name="rough_block" rgba="0.34 0.36 0.34 1"/>
-  </asset>
+  <include file="materials.xml"/>
 
   <worldbody>
     <geom name="floor" size="0 0 0.05" friction="0.85 .1 .1" type="plane" material="rough_groundplane"/>

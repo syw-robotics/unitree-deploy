@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import tempfile
-import threading
 from collections.abc import Callable
-from pathlib import Path
+from dataclasses import dataclass
 from typing import Protocol
 
 import mujoco
 import mujoco.viewer
 
-from unitree_deploy.config.defaults import MJSWAN_PORT
 from unitree_deploy.robot_model.robot_config import RobotModel
+from unitree_deploy.utils.yaml_utils import load_yaml
 
 
 class ViewerBackend(Protocol):
@@ -23,20 +21,74 @@ class ViewerBackend(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class ViewerCameraConfig:
+    lookat: tuple[float, float, float] = (0.0, 0.0, 0.85)
+    distance: float = 2.0
+    elevation: float = -15.0
+    azimuth: float = 20.0
+    track_body: str | None = None
+    track_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+
+def load_viewer_camera_config(robot: RobotModel) -> ViewerCameraConfig:
+    path = robot.config_dir / "visualizer.yaml"
+    if not path.exists():
+        return ViewerCameraConfig()
+
+    config = load_yaml(path)
+    camera = config.get("viewer", {}).get("camera", {})
+    if not isinstance(camera, dict):
+        return ViewerCameraConfig()
+
+    defaults = ViewerCameraConfig()
+    lookat = camera.get("lookat", defaults.lookat)
+    if len(lookat) != 3:
+        raise ValueError(f"{path} viewer.camera.lookat must contain 3 values")
+
+    track_offset = camera.get("track_offset", defaults.track_offset)
+    if len(track_offset) != 3:
+        raise ValueError(f"{path} viewer.camera.track_offset must contain 3 values")
+
+    return ViewerCameraConfig(
+        lookat=tuple(float(value) for value in lookat),
+        distance=float(camera.get("distance", defaults.distance)),
+        elevation=float(camera.get("elevation", defaults.elevation)),
+        azimuth=float(camera.get("azimuth", defaults.azimuth)),
+        track_body=camera.get("track_body"),
+        track_offset=tuple(float(value) for value in track_offset),
+    )
+
+
 class MujocoViewerBackend:
     def __init__(
         self,
         model: mujoco.MjModel,
         data: mujoco.MjData,
+        camera: ViewerCameraConfig,
         *,
         sim_hz: int,
         render_hz: int,
     ) -> None:
         self.model = model
         self.data = data
+        self.camera = camera
+        self.track_body_id = self.resolve_track_body_id()
         self.viewer = None
         self.viewer_tick = 0
         self.viewer_decim = max(1, sim_hz // render_hz)
+
+    def resolve_track_body_id(self) -> int | None:
+        if not self.camera.track_body:
+            return None
+        body_id = mujoco.mj_name2id(
+            self.model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            self.camera.track_body,
+        )
+        if body_id < 0:
+            raise ValueError(f"viewer.camera.track_body not found: {self.camera.track_body}")
+        return int(body_id)
 
     def run(self, simulate: Callable[[], None]) -> None:
         with mujoco.viewer.launch_passive(
@@ -46,10 +98,10 @@ class MujocoViewerBackend:
             show_right_ui=False,
         ) as viewer:
             self.viewer = viewer
-            viewer.cam.lookat[:] = (0.0, 0.0, 0.85)
-            viewer.cam.distance = 2.0
-            viewer.cam.elevation = -15.0
-            viewer.cam.azimuth = 20.0
+            viewer.cam.lookat[:] = self.camera.lookat
+            viewer.cam.distance = self.camera.distance
+            viewer.cam.elevation = self.camera.elevation
+            viewer.cam.azimuth = self.camera.azimuth
             simulate()
             self.viewer = None
 
@@ -60,64 +112,14 @@ class MujocoViewerBackend:
             return False
         self.viewer_tick += 1
         if self.viewer_tick % self.viewer_decim == 0:
+            self.update_tracked_lookat()
             self.viewer.sync()
         return True
 
-
-class MjswanViewerBackend:
-    def __init__(
-        self,
-        robot: RobotModel,
-        *,
-        log: Callable[[str], None],
-        port: int = MJSWAN_PORT,
-    ) -> None:
-        self.robot = robot
-        self.log = log
-        self.port = port
-
-    def run(self, simulate: Callable[[], None]) -> None:
-        # mjswan serves an independent browser-side scene, so SimBridge can keep stepping.
-        threading.Thread(
-            target=self.launch,
-            daemon=True,
-            name="mjswan-viewer",
-        ).start()
-        simulate()
-
-    def sync(self) -> bool:
-        return True
-
-    def launch(self) -> None:
-        import mjswan
-
-        output_dir = (
-            Path(tempfile.gettempdir())
-            / "unitree-deploy-mjswan"
-            / f"{self.robot.name}_{self.robot.terrain}"
-        )
-        self.log(
-            "starting mjswan viewer server; this is a browser-side MuJoCo scene "
-            "and does not mirror SimBridge state yet"
-        )
-        builder = mjswan.Builder()
-        project = builder.add_project(name=f"{self.robot.name} deploy")
-        scene = project.add_scene(
-            spec=mujoco.MjSpec.from_file(str(self.robot.xml_path)),
-            name=f"{self.robot.name} {self.robot.terrain}",
-        )
-        scene.set_viewer_config(
-            mjswan.ViewerConfig(
-                lookat=(0.0, 0.0, 0.85),
-                distance=2.0,
-                elevation=-15.0,
-                azimuth=20.0,
-                origin_type=mjswan.ViewerConfig.OriginType.WORLD,
-            )
-        )
-        app = builder.build(output_dir=output_dir)
-        self.log(f"mjswan viewer: http://localhost:{self.port}")
-        app.launch(port=self.port, open_browser=False)
+    def update_tracked_lookat(self) -> None:
+        if self.viewer is None or self.track_body_id is None:
+            return
+        self.viewer.cam.lookat[:] = self.data.xpos[self.track_body_id] + self.camera.track_offset
 
 
 def create_viewer_backend(
@@ -130,13 +132,13 @@ def create_viewer_backend(
     render_hz: int,
     log: Callable[[str], None],
 ) -> ViewerBackend:
+    camera = load_viewer_camera_config(robot)
     if viewer == "mujoco":
         return MujocoViewerBackend(
             model,
             data,
+            camera,
             sim_hz=sim_hz,
             render_hz=render_hz,
         )
-    if viewer == "mjswan":
-        return MjswanViewerBackend(robot, log=log)
     raise ValueError(f"unsupported viewer backend: {viewer}")

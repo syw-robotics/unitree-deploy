@@ -11,7 +11,7 @@ from pathlib import Path
 DEFAULT_ROBOT = "g1"
 DEFAULT_TERRAIN = "flat"
 DEFAULT_VIEWER = "mujoco"
-VIEWER_CHOICES = ("mujoco", "mjswan")
+VIEWER_CHOICES = ("mujoco",)
 ROBOT_MODEL_ROOT = Path(__file__).parent
 SCENE_ROOT = ROBOT_MODEL_ROOT / "scene"
 
@@ -41,7 +41,7 @@ def available_robots() -> list[str]:
 def available_terrains() -> list[str]:
     if not SCENE_ROOT.exists():
         return []
-    return sorted(path.stem.removesuffix("_terrain") for path in SCENE_ROOT.glob("*.xml"))
+    return sorted(path.stem.removesuffix("_terrain") for path in SCENE_ROOT.glob("*_terrain.xml"))
 
 
 def load_robot_model(
@@ -112,8 +112,10 @@ def resolve_terrain_xml(terrain: str | Path) -> Path:
 
 
 def compose_model_scene_xml(source_xml_path: Path, terrain_xml_path: Path, robot: str) -> Path:
-    source_bytes = source_xml_path.read_bytes()
-    terrain_bytes = terrain_xml_path.read_bytes()
+    source_root = _load_mjcf_with_includes(source_xml_path)
+    terrain_root = _load_mjcf_with_includes(terrain_xml_path)
+    source_bytes = ET.tostring(source_root, encoding="utf-8")
+    terrain_bytes = ET.tostring(terrain_root, encoding="utf-8")
     cache_key = b"\0".join(
         [
             source_xml_path.as_posix().encode(),
@@ -130,17 +132,46 @@ def compose_model_scene_xml(source_xml_path: Path, terrain_xml_path: Path, robot
     if output_path.exists():
         return output_path
 
-    robot_root = ET.fromstring(source_bytes)
-    terrain_root = ET.fromstring(terrain_bytes)
-
-    _absolutize_compiler_dirs(robot_root, source_xml_path.parent)
+    _absolutize_compiler_dirs(source_root, source_xml_path.parent)
     _absolutize_asset_files(terrain_root, terrain_xml_path.parent)
-    _merge_mjcf_roots(robot_root, terrain_root)
+    _merge_mjcf_roots(source_root, terrain_root)
 
-    tree = ET.ElementTree(robot_root)
+    tree = ET.ElementTree(source_root)
     ET.indent(tree, space="  ")
     tree.write(output_path, encoding="utf-8", xml_declaration=False)
     return output_path
+
+
+def _load_mjcf_with_includes(xml_path: Path) -> ET.Element:
+    root = ET.parse(xml_path).getroot()
+    _expand_mjcf_includes(root, xml_path.parent)
+    return root
+
+
+def _expand_mjcf_includes(element: ET.Element, base_dir: Path) -> None:
+    expanded_children: list[ET.Element] = []
+    for child in list(element):
+        if child.tag != "include":
+            _expand_mjcf_includes(child, base_dir)
+            expanded_children.append(child)
+            continue
+
+        include_file = child.get("file")
+        if not include_file:
+            raise ValueError("<include> element is missing required 'file' attribute")
+
+        include_path = Path(include_file).expanduser()
+        if not include_path.is_absolute():
+            include_path = (base_dir / include_path).resolve()
+
+        include_root = ET.parse(include_path).getroot()
+        if include_root.tag != "mujoco":
+            raise ValueError(f"included MJCF file must have a <mujoco> root: {include_path}")
+
+        _expand_mjcf_includes(include_root, include_path.parent)
+        expanded_children.extend(copy.deepcopy(include_child) for include_child in include_root)
+
+    element[:] = expanded_children
 
 
 def _merge_mjcf_roots(robot_root: ET.Element, terrain_root: ET.Element) -> None:
