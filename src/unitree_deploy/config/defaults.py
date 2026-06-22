@@ -25,17 +25,19 @@ BAND_STIFFNESS = 400.0
 BAND_DAMPING = 40.0
 BAND_STEP = 0.1
 BAND_MIN_Z = 0.8
-BAND_MAX_Z = 1.2
+BAND_MAX_Z = 1.6
 BAND_MAX_FORCE = 400.0
 
 # ---------- Remote Joystick Parameters ----------
 WIRELESS_REMOTE_BUTTON_BITS = {
     "Start": (2, 2),
     "A": (3, 0),
+    "B": (3, 1),
     "X": (3, 2),
 }
 SIM_REMOTE_BUTTON_KEYS = {
     "enter": WIRELESS_REMOTE_BUTTON_BITS["A"],
+    "b": WIRELESS_REMOTE_BUTTON_BITS["B"],
     "x": WIRELESS_REMOTE_BUTTON_BITS["X"],
     "\\": WIRELESS_REMOTE_BUTTON_BITS["Start"],
 }

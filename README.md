@@ -55,6 +55,12 @@ Controller：
 unitree-controller --mode sim --ckpt ckpt/g1/loco_flat
 ```
 
+也可以用一个 multi-ckpt YAML 管理多个可切换 policy：
+
+```bash
+unitree-controller --mode sim --multi-ckpt ckpt/g1/multi_ckpt.yaml
+```
+
 Visualizer：
 
 ```bash
@@ -124,6 +130,38 @@ observations:
 
 自定义 observation 的额外参数可以写在 `params` 下，会传给 observation 构造函数。旧的 `observation_modules` 方式仍兼容，但推荐直接用 `observation_types` 显式声明。只有需要改 action 后处理或推理逻辑时，才需要在 `policy.yaml` 里配置 `policy_class`。
 
-## 说明
+## Policy 切换
 
-当前版本的重点是先把主代码整理成规范 Python package，并把用户策略配置和核心代码逐步分离。插件机制还是第一版，后续还需要继续完善 deployment 目录和文档。
+单个 policy 仍然直接用 `--ckpt`。如果需要在同一个 controller 进程里切换多个 policy，新建一个 `multi_ckpt.yaml`：
+
+```yaml
+default: flat
+
+ckpts:
+  flat: "vanilla_ppo_flat"
+  lab_flat: "unitree_rl_lab_flat"
+  rough: "rough_loco"
+
+switch:
+  enabled: true
+  button: B
+  order: [flat, lab_flat, rough]
+  # 只允许 policy 已经在运行时切换；按 B 后按 order 切到下一个 policy。
+  only_when: [run_policy]
+  # null 表示切换后保持当前 controller 状态；这里会继续留在 run_policy。
+  on_switch: null
+```
+
+`ckpts` 的值相对 `multi_ckpt.yaml` 所在目录解析，可以直接写 ckpt 目录，也可以写 `{policy_yaml: ".../policy.yaml"}`。切换时 controller 会重置目标 policy；上面的配置表示当前正在 `run_policy` 时，按 B 会直接从 policy A 切到 policy B 并继续运行。`on_switch` 可以设成 `move_to_default_qpos`，用于切换后先回到新 policy 的默认姿态，再按 Start 运行。
+
+为了保持运行时简单和安全，同一个 `multi_ckpt.yaml` 下的 ckpt 必须使用相同的 `sdk_joint_order` 和 `policy_step_dt`；`obs_joint_order`、`action_joint_order`、ONNX、observation 配置和 gain 可以各自不同。
+
+仿真中默认按键是 `b` 切换 policy；真机遥控器默认使用 `B`。
+
+
+## TODO
+
+- [ ] Max torque clip
+- [ ] G1 Motion Tracking Policy Support
+- [ ] VR teleop device port, for realtime teleoperation
+

@@ -16,13 +16,13 @@ from unitree_deploy.config.defaults import (
     MOVE_TO_DEFAULT_STATE,
     MOVE_TO_DEFAULT_TIME,
     RUN_POLICY_STATE,
-    WIRELESS_REMOTE_BUTTON_BITS,
     DAMPING_STATE,
+    WIRELESS_REMOTE_BUTTON_BITS,
     sim_key_for_button,
 )
 from unitree_deploy.obs.observation import ObservationContext
-from unitree_deploy.policy.base_policy import load_policy
 from unitree_deploy.robot_model.robot_config import DEFAULT_ROBOT
+from unitree_deploy.runtime.multi_ckpt import PolicyManager
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 from unitree_sdk2py.core.channel import (
     ChannelFactoryInitialize,
@@ -58,6 +58,7 @@ class RuntimeConfig:
     net: str | None
     ckpt_dir: Path
     robot: str | None
+    multi_ckpt: Path | None = None
 
 
 class RemoteCommand:
@@ -95,33 +96,17 @@ class Controller:
 
     def __init__(self, config: RuntimeConfig):
         self.config = config
-        self.ckpt_dir = config.ckpt_dir.resolve()
-        self.policy = load_policy(self.ckpt_dir / "policy.yaml")
-        self.robot = config.robot or self.policy.config.get("robot", DEFAULT_ROBOT)
+        self.ckpt_dir = config.ckpt_dir.expanduser().resolve()
+        self.policy_manager = PolicyManager.load(self.ckpt_dir, config.multi_ckpt)
+        self.robot = config.robot or self.active_profile.policy.config.get("robot", DEFAULT_ROBOT)
 
         self.lowcmd_topic = LOWCMD_TOPIC
         self.lowstate_topic = LOWSTATE_TOPIC
-        self.sdk_joint_order = list(self.policy.sdk_joint_order)
-        self.obs_joint_order = list(self.policy.obs_joint_order)
+        self.sdk_joint_order = list(self.active_profile.sdk_joint_order)
+        self.obs_joint_order = list(self.active_profile.obs_joint_order)
         self.num_joints = len(self.sdk_joint_order)
-        self.check_joint_config()
-
-        self.sdk_to_obs = self.reorder_indices(self.sdk_joint_order, self.obs_joint_order)
-        self.obs_to_sdk = self.reorder_indices(self.obs_joint_order, self.sdk_joint_order)
-        self.kp_policy = self.gain_array("kp_policy", legacy_keys=("kp", "kps_real"))
-        self.kd_policy = self.gain_array("kd_policy", legacy_keys=("kd", "kds_real"))
-        self.kp_fixed_stand = self.gain_array("kp_fixed_stand", fallback=self.kp_policy)
-        self.kd_fixed_stand = self.gain_array("kd_fixed_stand", fallback=self.kd_policy)
-        self.kd_damping = self.gain_array(
-            "kd_damping",
-            fallback=np.ones(self.num_joints, dtype=np.float64),
-        )
-        self.command_min, self.command_max = self.command_range()
         self.raw_command = np.zeros(3, dtype=np.float64)
         self.zero = np.zeros(self.num_joints, dtype=np.float64)
-        self.default_q_obs = self.policy.default_joint_pos
-        self.default_q_sdk = self.default_q_obs[self.obs_to_sdk]
-        self.target_obs = np.zeros(self.num_joints, dtype=np.float32)
         self.target_sdk = np.zeros(self.num_joints, dtype=np.float32)
 
         self.lock = threading.Lock()
@@ -135,12 +120,12 @@ class Controller:
 
         self.q = np.zeros(self.num_joints, dtype=np.float64)
         self.dq = np.zeros(self.num_joints, dtype=np.float64)
-        self.q_obs = np.zeros(self.num_joints, dtype=np.float64)
-        self.dq_obs = np.zeros(self.num_joints, dtype=np.float64)
         self.move_start_q = np.zeros(self.num_joints, dtype=np.float32)
+        self.target_pos_move_to_default = np.zeros(self.num_joints, dtype=np.float32)
         self.quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.gyro = np.zeros(3, dtype=np.float64)
         self.command = np.zeros(3, dtype=np.float64)
+        self.last_policy_command = np.zeros(3, dtype=np.float64)
         self.remote = RemoteCommand()
 
         if config.mode == "real":
@@ -158,73 +143,16 @@ class Controller:
 
         self._init_handlers()
 
-    # ----- Config and joint-order helpers -----
+    @property
+    def active_profile(self):
+        return self.policy_manager.active
 
-    @staticmethod
-    def reorder_indices(source: list[str], target: list[str]) -> np.ndarray:
-        source_index = {name: i for i, name in enumerate(source)}
-        return np.asarray([source_index[name] for name in target], dtype=np.int64)
+    @property
+    def active_profile_name(self) -> str:
+        return self.policy_manager.active_name
 
-    def check_joint_config(self) -> None:
-        if len(self.obs_joint_order) != self.num_joints:
-            raise ValueError(
-                f"joint count mismatch: {len(self.obs_joint_order)} obs joints, "
-                f"{self.num_joints} sdk joints"
-            )
-        if set(self.obs_joint_order) != set(self.sdk_joint_order):
-            missing_in_sdk = sorted(set(self.obs_joint_order) - set(self.sdk_joint_order))
-            missing_in_obs = sorted(set(self.sdk_joint_order) - set(self.obs_joint_order))
-            raise ValueError(
-                f"obs_joint_order and sdk_joint_order must contain the same joints; "
-                f"missing_in_sdk={missing_in_sdk}, missing_in_obs={missing_in_obs}"
-            )
-        if len(self.policy.default_joint_pos) != self.num_joints:
-            raise ValueError(
-                f"policy default_qpos has {len(self.policy.default_joint_pos)} joints, "
-                f"controller has {self.num_joints}"
-            )
-
-    def gain_array(
-        self,
-        key: str,
-        *,
-        legacy_keys: tuple[str, ...] = (),
-        fallback: np.ndarray | None = None,
-    ) -> np.ndarray:
-        config_key = next(
-            (candidate for candidate in (key, *legacy_keys) if candidate in self.policy.config),
-            None,
-        )
-        if config_key is None:
-            if fallback is None:
-                names = ", ".join(repr(name) for name in (key, *legacy_keys))
-                raise KeyError(f"policy.yaml must define one of: {names}")
-            values = np.asarray(fallback, dtype=np.float64).reshape(-1).copy()
-            config_key = key
-        else:
-            values = np.asarray(self.policy.config[config_key], dtype=np.float64).reshape(-1)
-
-        if values.size != self.num_joints:
-            raise ValueError(f"{config_key} has {values.size} values, expected {self.num_joints}")
-        return values
-
-    def command_range(self) -> tuple[np.ndarray, np.ndarray]:
-        for observation_spec in self.policy.config["observations"]:
-            if observation_spec["type"] != "command":
-                continue
-            command_range = np.asarray(
-                observation_spec["command_range"],
-                dtype=np.float64,
-            )
-            if command_range.shape != (3, 2):
-                raise ValueError(
-                    f"command_range must have shape (3, 2), got {command_range.shape}"
-                )
-            return command_range[:, 0], command_range[:, 1]
-        raise KeyError("policy.yaml observations must include type: command")
-
-    def write_obs_to_sdk(self, value: np.ndarray) -> np.ndarray:
-        np.take(value, self.obs_to_sdk, out=self.target_sdk)
+    def reorder_policy_to_sdk(self, value: np.ndarray) -> np.ndarray:
+        np.take(value, self.active_profile.obs_to_sdk, out=self.target_sdk)
         return self.target_sdk
 
     # ----- Real-robot setup -----
@@ -254,20 +182,20 @@ class Controller:
                 self.q[i] = float(state.q)
                 self.dq[i] = float(state.dq)
 
-            np.take(self.q, self.sdk_to_obs, out=self.q_obs)
-            np.take(self.dq, self.sdk_to_obs, out=self.dq_obs)
             self.quat[:] = np.asarray(msg.imu_state.quaternion[:4], dtype=np.float64)
             self.gyro[:] = np.asarray(msg.imu_state.gyroscope[:3], dtype=np.float64)
             self.remote.set(msg.wireless_remote)
             self.raw_command[:] = [self.remote.ly, -self.remote.lx, -self.remote.rx]
-            np.clip(self.raw_command, self.command_min, self.command_max, out=self.command)
+            profile = self.active_profile
+            np.clip(self.raw_command, profile.command_min, profile.command_max, out=self.command)
             self.has_low_state = True
 
     def observation(self) -> ObservationContext:
         with self.lock:
+            profile = self.active_profile
             return ObservationContext(
-                q=self.q_obs.copy(),
-                dq=self.dq_obs.copy(),
+                q=self.q[profile.sdk_to_obs].copy(),
+                dq=self.dq[profile.sdk_to_obs].copy(),
                 quat=self.quat.copy(),
                 gyro=self.gyro.copy(),
                 command=self.command.copy(),
@@ -279,16 +207,49 @@ class Controller:
         with self.lock:
             return self.remote.button_pressed(name)
 
-    def transition(self, state: str) -> None:
-        if self.state == state:
+    def transition(self, state: str, *, force: bool = False) -> None:
+        if self.state == state and not force:
             return
         self.state = state
         self.state_enter_t = time.perf_counter()
-        self.policy.reset()
+        self.active_profile.policy.reset()
         if state == MOVE_TO_DEFAULT_STATE:
             with self.lock:
-                self.move_start_q[:] = self.q_obs
+                profile = self.active_profile
+                self.move_start_q[:] = self.q[profile.sdk_to_obs]
         log(f"state -> {state}")
+
+    def switch_to_policy(self, name: str) -> bool:
+        if name == self.active_profile_name:
+            return False
+        if self.state not in self.policy_manager.switch.only_when:
+            allowed = ", ".join(sorted(self.policy_manager.switch.only_when))
+            log(f"policy switch ignored in state={self.state}; allowed states: {allowed}")
+            return False
+
+        with self.lock:
+            profile = self.policy_manager.switch_to(name)
+            self.obs_joint_order = list(profile.obs_joint_order)
+            np.clip(self.raw_command, profile.command_min, profile.command_max, out=self.command)
+        log(f"policy -> {name} ({profile.policy_yaml_path})")
+        if self.policy_manager.switch.on_switch:
+            self.transition(self.policy_manager.switch.on_switch, force=True)
+        return True
+
+    def switch_to_next_policy(self) -> bool:
+        if not self.policy_manager.switch_allowed(self.state):
+            allowed = ", ".join(sorted(self.policy_manager.switch.only_when))
+            log(f"policy switch ignored in state={self.state}; allowed states: {allowed}")
+            return False
+
+        with self.lock:
+            profile = self.policy_manager.switch_next()
+            self.obs_joint_order = list(profile.obs_joint_order)
+            np.clip(self.raw_command, profile.command_min, profile.command_max, out=self.command)
+        log(f"policy -> {profile.name} ({profile.policy_yaml_path})")
+        if self.policy_manager.switch.on_switch:
+            self.transition(self.policy_manager.switch.on_switch, force=True)
+        return True
 
     # ----- DDS output -----
 
@@ -334,7 +295,8 @@ class Controller:
 
         with self.lock:
             q = self.q.copy()
-        self.send_joint_cmd(q, self.zero, self.kd_damping)
+            kd_damping = self.active_profile.kd_damping
+        self.send_joint_cmd(q, self.zero, kd_damping)
 
     def step_move_to_default(self) -> None:
         if self.button_pressed("Start"):
@@ -347,40 +309,44 @@ class Controller:
             0.0,
             1.0,
         )
-        self.target_obs[:] = self.default_q_obs
-        self.target_obs -= self.move_start_q
-        self.target_obs *= ratio
-        self.target_obs += self.move_start_q
+        profile = self.active_profile
+        self.target_pos_move_to_default[:] = profile.default_q_obs
+        self.target_pos_move_to_default -= self.move_start_q
+        self.target_pos_move_to_default *= ratio
+        self.target_pos_move_to_default += self.move_start_q
         self.send_joint_cmd(
-            self.write_obs_to_sdk(self.target_obs),
-            self.kp_fixed_stand,
-            self.kd_fixed_stand,
+            self.reorder_policy_to_sdk(self.target_pos_move_to_default),
+            profile.kp_fixed_stand,
+            profile.kd_fixed_stand,
         )
 
     def step_policy(self) -> None:
         # Policy returns targets in policy order; LowCmd must be written in raw motor order.
-        target_obs = self.policy.compute_target_q(self.observation())
-        self.send_joint_cmd(self.write_obs_to_sdk(target_obs), self.kp_policy, self.kd_policy)
+        profile = self.active_profile
+        observation = self.observation()
+        self.last_policy_command[:] = observation.command
+        policy_action = profile.policy.compute_target_q(observation)
+        self.send_joint_cmd(self.reorder_policy_to_sdk(policy_action), profile.kp_policy, profile.kd_policy)
 
     # ----- State dispatch -----
 
-    _STATE_HANDLERS: dict[str, Callable[[], None]] = {}
-
     def _init_handlers(self) -> None:
-        if Controller._STATE_HANDLERS:
-            return
-        Controller._STATE_HANDLERS.update({
+        self._state_handlers: dict[str, Callable[[], None]] = {
             DAMPING_STATE: self.step_damping,
             MOVE_TO_DEFAULT_STATE: self.step_move_to_default,
             RUN_POLICY_STATE: self.step_policy,
-        })
+        }
 
     def step(self) -> None:
+        if self.policy_manager.switch.enabled and self.button_pressed(self.policy_manager.switch.button):
+            self.switch_to_next_policy()
+            return
+
         if self.state != DAMPING_STATE and self.button_pressed("X"):
             self.transition(DAMPING_STATE)
             return
 
-        handler = self._STATE_HANDLERS.get(self.state)
+        handler = self._state_handlers.get(self.state)
         if handler is not None:
             handler()
 
@@ -391,29 +357,41 @@ class Controller:
             f"robot={self.robot} mode={self.config.mode} joints={self.num_joints} "
             f"topics: lowstate={self.lowstate_topic}, lowcmd={self.lowcmd_topic}"
         )
+        log(
+            f"policy={self.active_profile_name} "
+            f"available={','.join(self.policy_manager.profiles)}"
+        )
         if self.config.mode == "sim":
+            switch_hint = (
+                f", {sim_key_for_button(self.policy_manager.switch.button)} -> switch policy"
+                if self.policy_manager.switch.enabled
+                else ""
+            )
             log(
                 f"sim keymap: {sim_key_for_button('A')} -> A, "
                 f"{sim_key_for_button('Start')} -> Start, "
-                f"{sim_key_for_button('X')} -> Damping, R -> reset sim"
+                f"{sim_key_for_button('X')} -> Damping{switch_hint}, R -> reset sim"
             )
-        log("A: zero torque -> default pose, Start: default pose -> run policy, X: back to zero torque")
+        control_hint = "A: zero torque -> default pose, Start: default pose -> run policy, X: back to zero torque"
+        if self.policy_manager.switch.enabled:
+            control_hint += f", {self.policy_manager.switch.button}: switch policy"
+        log(control_hint)
         log("waiting for lowstate...")
 
-        timer = LoopTimer(float(self.policy.policy_step_dt))
+        timer = LoopTimer(float(self.active_profile.policy.policy_step_dt))
         last_log = time.perf_counter()
 
         while self.alive:
             with self.lock:
                 ready = self.has_low_state
-                command = self.command.copy()
             if ready:
                 self.step()
 
             now = time.perf_counter()
             if now - last_log >= 1.0:
+                command = self.last_policy_command
                 log(
-                    f"state={self.state} "
+                    f"state={self.state} policy={self.active_profile_name} "
                     f"cmd=({command[0]:+.2f}, {command[1]:+.2f}, {command[2]:+.2f})"
                 )
                 last_log = now
@@ -436,18 +414,23 @@ def parse_args() -> RuntimeConfig:
     parser.add_argument("--mode", choices=("real", "sim"), default=DEFAULT_MODE)
     parser.add_argument("--net", default=DEFAULT_NET, help="DDS network interface. Use lo for local sim.")
     parser.add_argument("--robot", help="Robot name for logs. Defaults to controller.yaml robot.")
-    parser.add_argument("--ckpt", type=Path, help="Checkpoint directory containing controller.yaml and policy.yaml.")
-    parser.add_argument("--deploy-yaml", type=Path, help="Compatibility alias: use the parent directory as --ckpt.")
+    parser.add_argument("--ckpt", type=Path, help="Checkpoint directory containing policy.yaml.")
+    parser.add_argument(
+        "--multi-ckpt",
+        type=Path,
+        help="YAML manifest containing multiple ckpt directories.",
+    )
     args = parser.parse_args()
-    if args.ckpt is None and args.deploy_yaml is None:
-        parser.error("one of --ckpt or --deploy-yaml is required")
+    if args.ckpt is None and args.multi_ckpt is None:
+        parser.error("one of --ckpt or --multi-ckpt is required")
 
-    ckpt_dir = args.ckpt or args.deploy_yaml.resolve().parent
+    ckpt_dir = args.ckpt or args.multi_ckpt.expanduser().resolve().parent
     return RuntimeConfig(
         mode=args.mode,
         net=args.net,
         ckpt_dir=ckpt_dir,
         robot=args.robot,
+        multi_ckpt=args.multi_ckpt,
     )
 
 

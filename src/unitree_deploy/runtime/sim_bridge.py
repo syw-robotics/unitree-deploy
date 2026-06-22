@@ -346,7 +346,6 @@ class SimBridge:
                 self.kd[:] = 0.0
                 self.tau_ff[:] = 0.0
                 self.motor_enable[:] = False
-            self.band_on = self.config.band_enabled and bool(self.band_site_ids)
             if self.band_on:
                 self.band_z = self.band_start_z
                 self.band_anchors[:] = self.band_start_anchors
@@ -383,7 +382,7 @@ class SimBridge:
             self.move_band(BAND_STEP)
         elif key == "down":
             self.move_band(-BAND_STEP)
-        elif key == "b":
+        elif key == "n":
             self.toggle_band()
         elif key == "r":
             with self.lock:
