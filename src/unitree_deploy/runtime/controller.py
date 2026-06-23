@@ -116,7 +116,8 @@ class Controller:
         self.sdk_joint_order = list(self.active_profile.sdk_joint_order)
         self.obs_joint_order = list(self.active_profile.obs_joint_order)
         self.num_joints = len(self.sdk_joint_order)
-        self.raw_command = np.zeros(3, dtype=np.float64)
+        command_dim = int(self.active_profile.command_min.size)
+        self.raw_command = np.zeros(command_dim, dtype=np.float64)
         self.zero = np.zeros(self.num_joints, dtype=np.float64)
         self.target_sdk = np.zeros(self.num_joints, dtype=np.float32)
 
@@ -133,8 +134,8 @@ class Controller:
         self.dq = np.zeros(self.num_joints, dtype=np.float64)
         self.quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.gyro = np.zeros(3, dtype=np.float64)
-        self.command = np.zeros(3, dtype=np.float64)
-        self.last_policy_command = np.zeros(3, dtype=np.float64)
+        self.command = np.zeros(command_dim, dtype=np.float64)
+        self.last_policy_command = np.zeros(command_dim, dtype=np.float64)
         self.remote = RemoteCommand()
         self.log = log
 
