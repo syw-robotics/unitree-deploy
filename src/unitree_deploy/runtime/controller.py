@@ -32,10 +32,18 @@ from unitree_sdk2py.core.channel import (
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
+from unitree_deploy.utils.terminal_status import ComponentConsole
+
+
+console = ComponentConsole("controller", "bright_blue")
 
 
 def log(message: str) -> None:
-    print(f"[controller] {message}", flush=True)
+    console.log(message)
+
+
+def status(fields) -> None:
+    console.status(fields)
 
 
 class LoopTimer:
@@ -289,10 +297,6 @@ class Controller:
     # ----- Per-state control steps -----
 
     def step_damping(self) -> None:
-        if self.button_pressed("A"):
-            self.transition(MOVE_TO_DEFAULT_STATE)
-            return
-
         with self.lock:
             q = self.q.copy()
             kd_damping = self.active_profile.kd_damping
@@ -338,6 +342,10 @@ class Controller:
         }
 
     def step(self) -> None:
+        if self.state != MOVE_TO_DEFAULT_STATE and self.button_pressed("A"):
+            self.transition(MOVE_TO_DEFAULT_STATE)
+            return
+
         if self.policy_manager.switch.enabled and self.button_pressed(self.policy_manager.switch.button):
             self.switch_to_next_policy()
             return
@@ -372,7 +380,11 @@ class Controller:
                 f"{sim_key_for_button('Start')} -> Start, "
                 f"{sim_key_for_button('X')} -> Damping{switch_hint}, R -> reset sim"
             )
-        control_hint = "A: zero torque -> default pose, Start: default pose -> run policy, X: back to zero torque"
+        control_hint = (
+            "A: damping/policy -> default pose, "
+            "Start: default pose -> run policy, "
+            "X: back to zero torque"
+        )
         if self.policy_manager.switch.enabled:
             control_hint += f", {self.policy_manager.switch.button}: switch policy"
         log(control_hint)
@@ -390,9 +402,14 @@ class Controller:
             now = time.perf_counter()
             if now - last_log >= 1.0:
                 command = self.last_policy_command
-                log(
-                    f"state={self.state} policy={self.active_profile_name} "
-                    f"cmd=({command[0]:+.2f}, {command[1]:+.2f}, {command[2]:+.2f})"
+                state_style = "green" if self.state == RUN_POLICY_STATE else "yellow"
+                status(
+                    [
+                        ("state", self.state, state_style),
+                        ("policy", self.active_profile_name, "cyan"),
+                        ("cmd", f"{command[0]:+.2f} {command[1]:+.2f} {command[2]:+.2f}", "white"),
+                        ("lowstate", "yes" if ready else "no", "green" if ready else "red"),
+                    ]
                 )
                 last_log = now
             timer.sleep()
@@ -405,6 +422,7 @@ class Controller:
             return
         self.cleanup_done = True
         self.alive = False
+        console.stop()
         self.lowstate_sub.Close()
         self.lowcmd_pub.Close()
 
@@ -438,7 +456,10 @@ def main() -> None:
     config = parse_args()
 
     if config.mode == "real":
-        print("WARNING: Please ensure there are no obstacles around the robot while running controller.py.")
+        console.log(
+            "WARNING: Please ensure there are no obstacles around the robot while running controller.py.",
+            style="bold red",
+        )
         input("Press Enter to continue...")
 
     if config.net:

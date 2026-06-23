@@ -52,11 +52,19 @@ from unitree_sdk2py.idl.default import (
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
+from unitree_deploy.utils.terminal_status import ComponentConsole
 from unitree_deploy.utils.viewer_backend import create_viewer_backend
 
 
+console = ComponentConsole("sim_bridge", "cyan")
+
+
 def log(message: str) -> None:
-    print(f"[sim_bridge] {message}", flush=True)
+    console.log(message)
+
+
+def status(fields) -> None:
+    console.status(fields)
 
 
 STICK_KEYS = frozenset("wasdqe")
@@ -572,14 +580,24 @@ class SimBridge:
             now = time.perf_counter()
             if now - last_log >= 1.0:
                 if self.simulation_paused:
-                    log(f"simulation paused; press \"space\" to start")
+                    status(
+                        [
+                            ("state", "paused", "yellow"),
+                            ("hint", "press space", "white"),
+                            ("band", "on" if self.band_on else "off", "green" if self.band_on else "red"),
+                        ]
+                    )
                 else:
                     command = self.current_command()
-                    log(
-                        f"t={steps / SIM_HZ:6.2f}s height={self.data.qpos[2]:.3f} "
-                        f"remote_cmd=({command[0]:+.2f}, {command[1]:+.2f}, {command[2]:+.2f}) "
-                        f"cmd={'yes' if self.command_received else 'no'} "
-                        f"band={'on' if self.band_on else 'off'}"
+                    status(
+                        [
+                            ("state", "running", "green"),
+                            ("t", f"{steps / SIM_HZ:6.2f}s", "cyan"),
+                            ("height", f"{self.data.qpos[2]:.3f}m", "magenta"),
+                            ("remote", f"{command[0]:+.2f} {command[1]:+.2f} {command[2]:+.2f}", "white"),
+                            ("cmd", "yes" if self.command_received else "no", "green" if self.command_received else "yellow"),
+                            ("band", "on" if self.band_on else "off", "green" if self.band_on else "red"),
+                        ]
                     )
                 last_log = now
             timer.sleep()
@@ -603,6 +621,7 @@ class SimBridge:
         if self.alive:
             log("shutting down...")
         self.alive = False
+        console.stop()
         self.keyboard.stop()
 
         if self.state_thread.is_alive() and threading.current_thread() is not self.state_thread:

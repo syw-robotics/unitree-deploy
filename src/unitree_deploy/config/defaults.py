@@ -30,10 +30,10 @@ BAND_MAX_FORCE = 400.0
 
 # ---------- Remote Joystick Parameters ----------
 WIRELESS_REMOTE_BUTTON_BITS = {
-    "Start": (2, 2),
-    "A": (3, 0),
-    "B": (3, 1),
-    "X": (3, 2),
+    "Start": (2, 2), # enter rl policy
+    "A": (3, 0),  # move to default pos
+    "B": (3, 1),  # switch rl policy
+    "X": (3, 2),  # damping
 }
 SIM_REMOTE_BUTTON_KEYS = {
     "enter": WIRELESS_REMOTE_BUTTON_BITS["A"],
