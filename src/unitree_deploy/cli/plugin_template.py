@@ -63,12 +63,11 @@ class CustomObservation(ObservationBase):
     Replace this with the tensors expected by your exported policy.
     """
 
-    def __init__(self, *, history_len: int, scale: float = 1.0) -> None:
+    def __init__(self, *, history_len: int) -> None:
         super().__init__(base_dim=3, history_len=history_len)
-        self.scale = float(scale)
 
-    def _compute_current(self, context: ObservationContext) -> np.ndarray:
-        return np.asarray(context.command, dtype=self.dtype).reshape(3) * self.scale
+    def compute(self, context: ObservationContext) -> np.ndarray:
+        return np.asarray(context.command, dtype=self.dtype).reshape(3)
 
 '''
 
@@ -114,8 +113,8 @@ observations:
     history_len: 1
   - type: custom_obs
     history_len: 1
-    params:
-      scale: 1.0
+    scale: 1.0
+    clip: [-10.0, 10.0]
 
 action_dim: 0
 action_clip: 1.0

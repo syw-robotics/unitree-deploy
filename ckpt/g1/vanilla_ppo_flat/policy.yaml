@@ -1,10 +1,11 @@
 #
 # Loco Lab Flat Terrain Locomotion Policy
-# BeyondMimic G1 config
+# Vanilla PPO
+# Trained with Z RL
 #
 
 robot: g1
-policy_path: "policy.onnx"
+policy_path: "policy_8000.onnx"
 
 policy_step_dt: 0.02
 physics_dt: 0.001
@@ -71,8 +72,7 @@ observation_types:
 observations:
   - type: base_ang_vel
     history_len: 5
-    params:
-      scale: [0.2, 0.2, 0.2]
+    scale: 0.2
   - type: projected_gravity
     history_len: 5
   - type: command
@@ -85,13 +85,13 @@ observations:
     history_len: 5
   - type: joint_vel
     history_len: 5
-    params:
-      scale: 0.05
+    scale: 0.05
   - type: prev_action
     history_len: 5
+    clip: [-10.0, 10.0]
 
 action_dim: 29
-action_clip: 1000.0
+action_clip: 10.0
 
 # Action joint order follows training action joint order.
 action_joint_order: [

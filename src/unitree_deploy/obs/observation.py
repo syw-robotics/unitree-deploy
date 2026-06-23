@@ -49,6 +49,7 @@ class ObservationBase:
         self.history_len = int(history_len)
         self.dtype = np.dtype(dtype)
         self.buffer = np.zeros((self.history_len, self.base_dim), dtype=self.dtype)
+        self._scale = 1.0
         self._clip_min = None
         self._clip_max = None
 
@@ -56,8 +57,14 @@ class ObservationBase:
     def size(self) -> int:
         return self.base_dim * self.history_len
 
-    def set_clip(self, clipp) -> None:
-        clip_range = np.asarray(clipp, dtype=self.dtype)
+    def set_scale(self, scale) -> None:
+        scale_array = np.asarray(scale, dtype=self.dtype).reshape(-1)
+        if scale_array.size != 1:
+            raise ValueError(f"scale must be a single float, got {scale_array.shape}")
+        self._scale = float(scale_array[0])
+
+    def set_clip(self, clip) -> None:
+        clip_range = np.asarray(clip, dtype=self.dtype)
         if clip_range.shape == (2,):
             clip_min = clip_range[0]
             clip_max = clip_range[1]
@@ -66,10 +73,10 @@ class ObservationBase:
             clip_max = clip_range[:, 1]
         else:
             raise ValueError(
-                f"clipp must have shape (2,) or ({self.base_dim}, 2), got {clip_range.shape}"
+                f"clip must have shape (2,) or ({self.base_dim}, 2), got {clip_range.shape}"
             )
         if np.any(clip_min > clip_max):
-            raise ValueError("clipp lower bounds must be <= upper bounds")
+            raise ValueError("clip lower bounds must be <= upper bounds")
         self._clip_min = clip_min
         self._clip_max = clip_max
 
@@ -77,11 +84,11 @@ class ObservationBase:
         self.buffer.fill(0.0)
 
     def prime(self, context: ObservationContext) -> None:
-        current = self._compute_clipped_current_obs(context)
+        current = self._compute_processed_current_obs(context)
         self.buffer[:] = current
 
     def update(self, context: ObservationContext) -> None:
-        current = self._compute_clipped_current_obs(context)
+        current = self._compute_processed_current_obs(context)
         if self.history_len > 1:
             # Shift left: drop oldest at index 0, move everyone down
             self.buffer[:-1] = self.buffer[1:]
@@ -90,13 +97,15 @@ class ObservationBase:
     def compute(self, context: ObservationContext) -> np.ndarray:
         raise NotImplementedError
 
-    def _compute_clipped_current_obs(self, context: ObservationContext) -> np.ndarray:
-        return self._clip_values(self.compute(context))
+    def _compute_processed_current_obs(self, context: ObservationContext) -> np.ndarray:
+        return self._process_values(self.compute(context))  # scale and clip raw obs values
 
-    def _clip_values(self, values) -> np.ndarray:
+    def _process_values(self, values) -> np.ndarray:
         current = np.asarray(values, dtype=self.dtype).reshape(-1)
         if current.size != self.base_dim:
             raise ValueError(f"observation term produced {current.size} values, expected {self.base_dim}")
+        if self._scale != 1.0:
+            current = current * self._scale
         if self._clip_min is None:
             return current
         return np.clip(current, self._clip_min, self._clip_max)
@@ -136,29 +145,11 @@ class ProjectedGravityObservation(ObservationBase):
 
 
 class BaseAngularVelocityObservation(ObservationBase):
-    """Angular velocity observation.
-
-    When *scale* is provided, the gyro reading is multiplied by the scale factor.
-    """
-
-    def __init__(
-        self,
-        *,
-        history_len: int,
-        scale: float | list[float] | np.ndarray | None = None,
-        dtype=np.float32,
-    ) -> None:
+    def __init__(self, *, history_len: int, dtype=np.float32) -> None:
         super().__init__(base_dim=3, history_len=history_len, dtype=dtype)
-        if scale is not None:
-            self._scale = np.asarray(scale, dtype=self.dtype).reshape(-1)
-        else:
-            self._scale = None
 
     def compute(self, context: ObservationContext) -> np.ndarray:
-        values = np.asarray(context.gyro, dtype=self.dtype).reshape(-1)
-        if self._scale is not None:
-            values = values * self._scale[: self.base_dim]
-        return values
+        return np.asarray(context.gyro, dtype=self.dtype).reshape(-1)
 
 
 class JointPositionObservation(ObservationBase):
@@ -190,34 +181,23 @@ class JointPositionObservation(ObservationBase):
 
 
 class JointVelocityObservation(ObservationBase):
-    """Joint velocity observation.
-
-    When *scale* is provided, the velocity is multiplied by the scale factor
-    (applied after indexing).
-    """
-
     def __init__(
         self,
         *,
         controlled_joint_indices: np.ndarray,
         history_len: int,
         use_position_difference: bool = False,
-        scale: float | np.ndarray | None = None,
         dtype=np.float32,
     ) -> None:
         controlled_joint_indices = np.asarray(controlled_joint_indices, dtype=np.int64).reshape(-1)
         super().__init__(base_dim=controlled_joint_indices.size, history_len=history_len, dtype=dtype)
         self.controlled_joint_indices = controlled_joint_indices
         self.use_position_difference = bool(use_position_difference)
-        self._vel_scale = float(scale) if scale is not None else None
         self._previous_q = None
 
     def compute(self, context: ObservationContext) -> np.ndarray:
         dq = np.asarray(context.dq, dtype=self.dtype).reshape(-1)
-        values = dq[self.controlled_joint_indices]
-        if self._vel_scale is not None:
-            values = values * self._vel_scale
-        return values
+        return dq[self.controlled_joint_indices]
 
     def reset(self) -> None:
         super().reset()
@@ -237,7 +217,7 @@ class PreviousActionObservation(ObservationBase):
         del context
 
     def record_action(self, action) -> None:
-        action_array = self._clip_values(action)
+        action_array = self._process_values(action)
         if self.history_len > 1:
             self.buffer[:-1] = self.buffer[1:]
         self.buffer[-1] = action_array

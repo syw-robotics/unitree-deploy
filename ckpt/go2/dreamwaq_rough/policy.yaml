@@ -55,8 +55,7 @@ observation_types:
 observations:
   - type: base_ang_vel
     history_len: 6
-    params:
-      scale: [0.25, 0.25, 0.25]
+    scale: 0.25
   - type: projected_gravity
     history_len: 6
   - type: command
@@ -69,8 +68,7 @@ observations:
     history_len: 6
   - type: joint_vel
     history_len: 6
-    params:
-      scale: 0.05
+    scale: 0.05
   - type: prev_action
     history_len: 6
 

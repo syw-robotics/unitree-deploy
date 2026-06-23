@@ -21,6 +21,7 @@ ObservationRegistry: TypeAlias = Mapping[str, type[ObservationBase]]
 
 DEFAULT_POLICY_CLASS = "unitree_deploy.policy.base_policy:BasePolicy"
 
+
 class BasePolicy:
     """Base ONNX policy wrapper.
 
@@ -169,7 +170,8 @@ class BasePolicy:
         if not isinstance(params, dict):
             raise TypeError(f"observation params for {observation_type!r} must be a mapping")
         params = dict(params)
-        clipp = params.pop("clipp", None)
+        clip = observation_spec.get("clip")
+        scale = observation_spec.get("scale")
 
         if observation_type == "command":
             kwargs["command_range"] = observation_spec["command_range"]
@@ -193,8 +195,10 @@ class BasePolicy:
             raise KeyError(f"unknown observation type {observation_type!r}; known types: {known_types}") from exc
 
         observation = observation_cls(**kwargs)
-        if clipp is not None:
-            observation.set_clip(clipp)
+        if scale is not None:
+            observation.set_scale(scale)
+        if clip is not None:
+            observation.set_clip(clip)
         return observation
 
     def reset(self) -> None:

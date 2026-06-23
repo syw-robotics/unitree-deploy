@@ -124,11 +124,11 @@ observation_types:
 observations:
   - type: custom_obs
     history_len: 1
-    params:
-      scale: 1.0
+    scale: 1.0
+    clip: [-10.0, 10.0]
 ```
 
-自定义 observation 的额外参数可以写在 `params` 下，会传给 observation 构造函数。旧的 `observation_modules` 方式仍兼容，但推荐直接用 `observation_types` 显式声明。只有需要改 action 后处理或推理逻辑时，才需要在 `policy.yaml` 里配置 `policy_class`。
+`scale` 是 observation term 的通用标量，会作用于当前 term 的所有维度；`clip` 是 observation term 的通用裁剪范围，会在 scale 后、写入 history buffer 前生效，可以写成 `[min, max]`，也可以按 term 维度写成 `[[min, max], ...]`。自定义 observation 的其他额外参数可以写在 `params` 下，会传给 observation 构造函数。旧的 `observation_modules` 方式仍兼容，但推荐直接用 `observation_types` 显式声明。只有需要改 action 后处理或推理逻辑时，才需要在 `policy.yaml` 里配置 `policy_class`。
 
 ## Policy 切换
 
@@ -164,4 +164,3 @@ switch:
 - [ ] Max torque clip
 - [ ] G1 Motion Tracking Policy Support
 - [ ] VR teleop device port, for realtime teleoperation
-
