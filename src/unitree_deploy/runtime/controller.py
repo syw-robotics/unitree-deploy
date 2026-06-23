@@ -3,26 +3,28 @@ import signal
 import struct
 import threading
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 from unitree_deploy.config.defaults import (
+    DAMPING_STATE,
     DEFAULT_MODE,
     DEFAULT_NET,
     LOWCMD_TOPIC,
     LOWSTATE_TOPIC,
-    MOVE_TO_DEFAULT_STATE,
-    MOVE_TO_DEFAULT_TIME,
     RUN_POLICY_STATE,
-    DAMPING_STATE,
     WIRELESS_REMOTE_BUTTON_BITS,
     sim_key_for_button,
 )
 from unitree_deploy.obs.observation import ObservationContext
 from unitree_deploy.robot_model.robot_config import DEFAULT_ROBOT
 from unitree_deploy.runtime.multi_ckpt import PolicyManager
+from unitree_deploy.runtime.controller_state_machine import (
+    ControllerStateMachine,
+    load_state_machine_config,
+    resolve_state_machine_path,
+)
 from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 from unitree_sdk2py.core.channel import (
     ChannelFactoryInitialize,
@@ -67,6 +69,7 @@ class RuntimeConfig:
     ckpt_dir: Path
     robot: str | None
     multi_ckpt: Path | None = None
+    state_machine: Path | None = None
 
 
 class RemoteCommand:
@@ -128,16 +131,20 @@ class Controller:
 
         self.q = np.zeros(self.num_joints, dtype=np.float64)
         self.dq = np.zeros(self.num_joints, dtype=np.float64)
-        self.move_start_q = np.zeros(self.num_joints, dtype=np.float32)
-        self.target_pos_move_to_default = np.zeros(self.num_joints, dtype=np.float32)
         self.quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.gyro = np.zeros(3, dtype=np.float64)
         self.command = np.zeros(3, dtype=np.float64)
         self.last_policy_command = np.zeros(3, dtype=np.float64)
         self.remote = RemoteCommand()
+        self.log = log
 
         if config.mode == "real":
             self.enter_debug_mode()
+
+        state_machine_base = config.multi_ckpt.parent if config.multi_ckpt else self.ckpt_dir
+        state_machine_path = resolve_state_machine_path(state_machine_base, config.state_machine)
+        state_machine_config = load_state_machine_config(state_machine_path)
+        self.state_machine_path = state_machine_path
 
         self.low_cmd = unitree_hg_msg_dds__LowCmd_()
         self.crc = CRC()
@@ -149,7 +156,8 @@ class Controller:
         signal.signal(signal.SIGINT, self.close)
         signal.signal(signal.SIGTERM, self.close)
 
-        self._init_handlers()
+        self.state_machine = ControllerStateMachine(self, state_machine_config)
+        self.state = self.state_machine.current_name
 
     @property
     def active_profile(self):
@@ -216,16 +224,7 @@ class Controller:
             return self.remote.button_pressed(name)
 
     def transition(self, state: str, *, force: bool = False) -> None:
-        if self.state == state and not force:
-            return
-        self.state = state
-        self.state_enter_t = time.perf_counter()
-        self.active_profile.policy.reset()
-        if state == MOVE_TO_DEFAULT_STATE:
-            with self.lock:
-                profile = self.active_profile
-                self.move_start_q[:] = self.q[profile.sdk_to_obs]
-        log(f"state -> {state}")
+        self.state_machine.transition(state, force=force)
 
     def switch_to_policy(self, name: str) -> bool:
         if name == self.active_profile_name:
@@ -294,69 +293,14 @@ class Controller:
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
         self.lowcmd_pub.Write(self.low_cmd)
 
-    # ----- Per-state control steps -----
-
-    def step_damping(self) -> None:
-        with self.lock:
-            q = self.q.copy()
-            kd_damping = self.active_profile.kd_damping
-        self.send_joint_cmd(q, self.zero, kd_damping)
-
-    def step_move_to_default(self) -> None:
-        if self.button_pressed("Start"):
-            if (time.perf_counter() - self.state_enter_t) >= MOVE_TO_DEFAULT_TIME:
-                self.transition(RUN_POLICY_STATE)
-                return
-
-        ratio = np.clip(
-            (time.perf_counter() - self.state_enter_t) / MOVE_TO_DEFAULT_TIME,
-            0.0,
-            1.0,
-        )
-        profile = self.active_profile
-        self.target_pos_move_to_default[:] = profile.default_q_obs
-        self.target_pos_move_to_default -= self.move_start_q
-        self.target_pos_move_to_default *= ratio
-        self.target_pos_move_to_default += self.move_start_q
-        self.send_joint_cmd(
-            self.reorder_policy_to_sdk(self.target_pos_move_to_default),
-            profile.kp_fixed_stand,
-            profile.kd_fixed_stand,
-        )
-
-    def step_policy(self) -> None:
-        # Policy returns targets in policy order; LowCmd must be written in raw motor order.
-        profile = self.active_profile
-        observation = self.observation()
-        self.last_policy_command[:] = observation.command
-        policy_action = profile.policy.compute_target_q(observation)
-        self.send_joint_cmd(self.reorder_policy_to_sdk(policy_action), profile.kp_policy, profile.kd_policy)
-
     # ----- State dispatch -----
 
-    def _init_handlers(self) -> None:
-        self._state_handlers: dict[str, Callable[[], None]] = {
-            DAMPING_STATE: self.step_damping,
-            MOVE_TO_DEFAULT_STATE: self.step_move_to_default,
-            RUN_POLICY_STATE: self.step_policy,
-        }
-
     def step(self) -> None:
-        if self.state != MOVE_TO_DEFAULT_STATE and self.button_pressed("A"):
-            self.transition(MOVE_TO_DEFAULT_STATE)
-            return
-
         if self.policy_manager.switch.enabled and self.button_pressed(self.policy_manager.switch.button):
             self.switch_to_next_policy()
             return
 
-        if self.state != DAMPING_STATE and self.button_pressed("X"):
-            self.transition(DAMPING_STATE)
-            return
-
-        handler = self._state_handlers.get(self.state)
-        if handler is not None:
-            handler()
+        self.state_machine.step()
 
     # ----- Main loop and cleanup -----
 
@@ -369,6 +313,7 @@ class Controller:
             f"policy={self.active_profile_name} "
             f"available={','.join(self.policy_manager.profiles)}"
         )
+        log(f"state_machine={self.state_machine_path or 'default'}")
         if self.config.mode == "sim":
             switch_hint = (
                 f", {sim_key_for_button(self.policy_manager.switch.button)} -> switch policy"
@@ -438,6 +383,11 @@ def parse_args() -> RuntimeConfig:
         type=Path,
         help="YAML manifest containing multiple ckpt directories.",
     )
+    parser.add_argument(
+        "--state-machine",
+        type=Path,
+        help="Optional YAML state machine. Defaults to state_machine.yaml beside the ckpt or multi-ckpt YAML.",
+    )
     args = parser.parse_args()
     if args.ckpt is None and args.multi_ckpt is None:
         parser.error("one of --ckpt or --multi-ckpt is required")
@@ -449,6 +399,7 @@ def parse_args() -> RuntimeConfig:
         ckpt_dir=ckpt_dir,
         robot=args.robot,
         multi_ckpt=args.multi_ckpt,
+        state_machine=args.state_machine,
     )
 
 

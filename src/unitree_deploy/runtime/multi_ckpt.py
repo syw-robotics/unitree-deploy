@@ -6,8 +6,6 @@ from pathlib import Path
 import numpy as np
 
 from unitree_deploy.config.defaults import (
-    DAMPING_STATE,
-    MOVE_TO_DEFAULT_STATE,
     RUN_POLICY_STATE,
     WIRELESS_REMOTE_BUTTON_BITS,
 )
@@ -288,21 +286,15 @@ def build_switch_config(
     if not order:
         raise ValueError("switch.order must not be empty")
 
-    known_states = {DAMPING_STATE, MOVE_TO_DEFAULT_STATE, RUN_POLICY_STATE}
     only_when = set(
         switch_config.get(
             "only_when",
-            [DAMPING_STATE, MOVE_TO_DEFAULT_STATE, RUN_POLICY_STATE],
+            [RUN_POLICY_STATE],
         )
     )
-    unknown_states = sorted(only_when - known_states)
-    if unknown_states:
-        raise KeyError(f"switch.only_when contains unknown states: {unknown_states}")
 
     on_switch_value = switch_config.get("on_switch", None)
     on_switch = "" if on_switch_value is None else str(on_switch_value)
-    if on_switch and on_switch not in known_states:
-        raise KeyError(f"switch.on_switch contains unknown state: {on_switch!r}")
 
     return SwitchConfig(
         enabled=enabled and len(profile_names) > 1,

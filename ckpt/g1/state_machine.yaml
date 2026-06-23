@@ -1,0 +1,23 @@
+initial: damping
+
+states:
+  damping:
+    type: damping
+    transitions:
+      A: move_to_default_qpos
+
+  move_to_default_qpos:
+    type: move_to_target_pos
+    target: default_q
+    duration: 2.0
+    kp: fixed_stand
+    kd: fixed_stand
+    transitions:
+      Start: run_policy
+      X: damping
+
+  run_policy:
+    type: policy
+    transitions:
+      A: move_to_default_qpos
+      X: damping
