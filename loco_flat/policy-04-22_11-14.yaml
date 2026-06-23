@@ -1,7 +1,0 @@
-in_keys: [policy]
-in_shapes:
-- [1, 249]
-onnx_version: 1.20.1
-onnxscript_version: 0.6.2
-out_keys: [_obs_normed, _actor_feature, loc, scale, action, action_log_prob]
-torch_version: 2.10.0+cu128

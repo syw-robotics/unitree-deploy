@@ -1,0 +1,11 @@
+<mujoco model="flat_terrain">
+  <include file="materials.xml"/>
+
+  <worldbody>
+    <light name="key_light" directional="true" diffuse="0.9 0.9 0.9" specular="0.05 0.05 0.05" pos="2 3 4" dir="-0.4 -0.6 -1" castshadow="false" cutoff="255"/>
+    <light name="fill_light" directional="true" diffuse="0.6 0.6 0.6" specular="0.02 0.02 0.02" pos="-2 3 3" dir="0.5 -0.5 -1" castshadow="false" cutoff="255"/>
+    <light name="rim_light" directional="true" diffuse="0.35 0.35 0.35" specular="0.01 0.01 0.01" pos="0 -4 3" dir="0 0.7 -1" castshadow="false" cutoff="255"/>
+    <light name="ambient_fill" directional="false" diffuse="0.4 0.4 0.4" specular="0 0 0" pos="0 0 3" castshadow="false" cutoff="255"/>
+    <geom name="floor" size="0 0 0.05" friction="0.75 .1 .1" type="plane" material="groundplane"/>
+  </worldbody>
+</mujoco>

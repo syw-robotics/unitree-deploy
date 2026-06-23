@@ -1,64 +1,161 @@
-# Install
-整体目录
+# Unitree Deploy
+
+[简体中文](README.zh-CN.md)
+
+Lightweight deployment codebase for Unitree robots.
+
+This repository wraps ONNX policies, robot observations, DDS topics, MuJoCo
+models, and simple controller state machines into a reusable deployment flow.
+It is useful for validating policies in simulation first, then running the same
+controller path on supported Unitree hardware.
+
+## ✨ Highlights
+
+- Shared controller runtime for `sim` and `real` modes.
+- ONNX policy loading with configurable `yaml` file.
+- Multi-policy switching support.
+- Template generator for custom deployment demands (such as customized obs).
+
+## 📦 Project Layout
+
+```text
+src/unitree_deploy/
+├── cli/              # console entry points
+├── runtime/          # controller and sim bridge loops
+├── policy/           # ONNX policy wrapper
+├── obs/              # observation terms
+├── visualization/    # robot state visualizer
+├── utils/            # shared helpers
+└── robot_model/      # bundled MuJoCo robot and terrain assets
+
+ckpt/
+├── g1/               # example G1 policies and multi-ckpt config
+└── go2/              # example Go2 policies
 ```
-${workspaceFolder}
-├── stubs
-├── unitree-deploy
-└── unitree_sdk2_python
-```
-```
-cd unitree-deploy
+
+## 🚀 Setup
+
+```bash
 uv sync
 source .venv/bin/activate
-git clone https://github.com/unitreerobotics/unitree_sdk2_python.git
-cd ../unitree_sdk2_python
-uv pip install -e .
 ```
 
-# 启动
-真机控制：
-`uv run python unitree-deploy/controller.py --mode real --net <跑策略的网卡名> --deploy-yaml unitree-deploy/loco_flat/controller.yaml`
+For the viser viewer extras (realtime robot state visualization):
 
-仿真控制：
-`uv run python unitree-deploy/sim_bridge.py`
-`uv run python unitree-deploy/controller.py --mode sim --deploy-yaml unitree-deploy/loco_flat/controller.yaml`
-
-状态可视化：
-`uv run python unitree-deploy/visualizer.py --mode sim`
-
-## 控制器状态机
-`controller.py` 有 4 个状态：
-- `zero_torque_state`
-- `move_to_default_qpos`
-- `default_qpos_state`
-- `run`
-
-切换规则：
-- `A` 从零力矩进入默认姿态过渡
-- `Start` 从默认姿态进入 `run`
-- `X` 返回零力矩
-
-## 仿真按键
-`sim_bridge.py` 同时负责遥控器映射和仿真复位：
-- `r` 重置仿真到初始状态
-- `b` 发送遥控器 `A`
-- `m` 发送遥控器 `Start`
-- `up` / `down` 调整吊带高度
-- `n` 解除吊带
-- `w/s/a/d/q/e` 分别控制前后、侧移、转向
-- `esc` 退出
-
-## 说明
-- `controller.py` 只负责状态订阅和控制输出。
-- `sim_bridge.py` 负责仿真状态发布和键盘输入。
-- `visualizer.py` 负责纯可视化。
-
-<video controls src="可视化.webm" title="Title"></video>
-
-## IDE中智能显示mujoco、pyrealsense等（C编写的py接口）的子类
+```bash
+uv sync --extra viewer
 ```
-cd ${workspaceFolder}
-uv pip install mypy
-uv run stubgen -m mujoco -o stubs
-uv run stubgen -p mujoco -o stubs
+
+`unitree_sdk2_python` is expected to be installed separately in the same Python
+environment.
+
+## 🕹️ Quick Start
+
+Run the MuJoCo-to-DDS bridge:
+
+```bash
+unitree-sim-bridge --robot g1
 ```
+
+Run a controller against the simulator:
+
+```bash
+unitree-controller --mode sim --ckpt ckpt/g1/vanilla_ppo_flat
+```
+
+Run with a multi-policy manifest:
+
+```bash
+unitree-controller --mode sim --multi-ckpt ckpt/g1/multi_ckpt.yaml
+```
+
+Start the viser visualizer:
+
+```bash
+unitree-visualizer --mode sim --robot g1
+```
+
+For real hardware, pass the DDS network interface explicitly:
+
+```bash
+unitree-controller --mode real --net <interface> --ckpt ckpt/g1/vanilla_ppo_flat
+```
+
+## 🧩 Deployment Folders
+
+A policy deployment folder usually looks like this:
+
+```text
+ckpt/<robot>/<policy>/
+├── policy.yaml             # policy, observation, joint order, and gain config
+├── policy.onnx             # exported ONNX policy, or another relative path
+├── custom_observations.py  # [optional] custom observation terms
+└── custom_policy.py        # [optional] custom inference/action logic
+```
+
+Generate a starter folder interactively:
+
+```bash
+unitree-plugin-template
+```
+
+Or script it:
+
+```bash
+unitree-plugin-template ckpt --robot g1 --name my_policy
+```
+
+Key `policy.yaml` fields:
+
+```yaml
+policy_path: "policy.onnx"
+obs_joint_order: [...]
+action_joint_order: [...]
+sdk_joint_order: [...]
+```
+
+`obs_joint_order`, `action_joint_order`, and `sdk_joint_order` are matched by
+joint name. Reorder indices are derived automatically, so they do not need to be
+written by hand.
+
+## 🔁 Multi-Policy Switching
+
+Use `--multi-ckpt` when several policies should be switchable at runtime:
+
+```yaml
+default: vanilla_ppo_flat
+
+ckpts:
+  vanilla_ppo_flat: "./vanilla_ppo_flat"
+  unitree_rl_lab_flat: "./unitree_rl_lab_flat"
+
+switch:
+  enabled: true
+  button: B
+  order: [vanilla_ppo_flat, unitree_rl_lab_flat]
+  only_when: [run_policy]
+  on_switch: null
+```
+
+In simulation, press `b` to switch policies. On hardware, use the remote `B`
+button. Policies in one manifest must share `sdk_joint_order` and
+`policy_step_dt`; observations, actions, gains, and ONNX files may differ.
+
+## ⌨️ Default Controls
+
+The default state machine uses these remote buttons:
+
+- `A`: move to default joint positions.
+- `Start`: run the active policy.
+- `B`: switch policy when multi-ckpt switching is enabled.
+- `X`: return to damping.
+
+In simulation, the mapped keys are `enter` for `A`, `\` for `Start`, `b` for
+`B`, and `x` for `X`.
+
+## ✅ TODO
+
+- [ ] Max torque clipping.
+- [ ] G1 motion tracking policy support.
+- [ ] VR teleoperation device port.
+- [ ] Check viser usability for odometry and RealSense hardware deployment.

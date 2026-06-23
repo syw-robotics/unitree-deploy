@@ -1,0 +1,171 @@
+#
+# Loco Lab Flat Terrain Locomotion Policy
+# Vanilla PPO
+# Trained with Z RL
+#
+
+robot: g1
+policy_path: "policy_8000.onnx"
+
+policy_step_dt: 0.02
+physics_dt: 0.001
+decimation: 20
+
+# Training obs joint order
+obs_joint_order: [
+  "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+  "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+  "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+  "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+  "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+]
+# IsaacLab default joint order 
+# obs_joint_order: [
+#   "left_hip_pitch_joint", "right_hip_pitch_joint", "waist_yaw_joint",
+#   "left_hip_roll_joint", "right_hip_roll_joint", "waist_roll_joint",
+#   "left_hip_yaw_joint", "right_hip_yaw_joint", "waist_pitch_joint",
+#   "left_knee_joint", "right_knee_joint",
+#   "left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
+#   "left_ankle_pitch_joint", "right_ankle_pitch_joint",
+#   "left_shoulder_roll_joint", "right_shoulder_roll_joint",
+#   "left_ankle_roll_joint", "right_ankle_roll_joint",
+#   "left_shoulder_yaw_joint", "right_shoulder_yaw_joint",
+#   "left_elbow_joint", "right_elbow_joint",
+#   "left_wrist_roll_joint", "right_wrist_roll_joint",
+#   "left_wrist_pitch_joint", "right_wrist_pitch_joint",
+#   "left_wrist_yaw_joint", "right_wrist_yaw_joint",
+# ]
+
+sdk_joint_order: [
+  "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+  "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+  "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+  "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+  "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+]
+
+# Default joint positions in sdk_joint_order.
+default_qpos: [
+  -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
+  -0.1, 0.0, 0.0, 0.3, -0.2, 0.0,
+  0.0, 0.0, 0.0,
+  0.2, 0.25, 0.0, 0.9, 0.0, 0.0, 0.0,
+  0.2, -0.25, 0.0, 0.9, 0.0, 0.0, 0.0,
+]
+
+policy_input_name: "obs"
+policy_output_name: "actions"
+
+# Observation specs
+obs_use_scaled_prev_action: false
+obs_prime_on_reset: true
+obs_group_concat_mode: term_major
+observation_types:
+  base_ang_vel: "unitree_deploy.obs.observation:BaseAngularVelocityObservation"
+  projected_gravity: "unitree_deploy.obs.observation:ProjectedGravityObservation"
+  command: "unitree_deploy.obs.observation:CommandObservation"
+  joint_pos_rel: "unitree_deploy.obs.observation:JointPositionObservation"
+  joint_vel: "unitree_deploy.obs.observation:JointVelocityObservation"
+  prev_action: "unitree_deploy.obs.observation:PreviousActionObservation"
+
+# Observation order
+observations:
+  - type: base_ang_vel
+    history_len: 5
+    scale: 0.2
+  - type: projected_gravity
+    history_len: 5
+  - type: command
+    history_len: 5
+    command_range:
+      - [-0.5, 1.0]   # lin_vel_x
+      - [-0.5, 0.5]   # lin_vel_y
+      - [-1.5, 1.5]   # ang_vel_yaw
+  - type: joint_pos_rel
+    history_len: 5
+  - type: joint_vel
+    history_len: 5
+    scale: 0.05
+  - type: prev_action
+    history_len: 5
+    clip: [-10.0, 10.0]
+
+action_dim: 29
+action_clip: 10.0
+
+# Action joint order follows training action joint order.
+action_joint_order: [
+  "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+  "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+  "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+  "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+  "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+]
+# IsaacLab default joint order 
+# action_joint_order: [
+#   "left_hip_pitch_joint", "right_hip_pitch_joint", "waist_yaw_joint",
+#   "left_hip_roll_joint", "right_hip_roll_joint", "waist_roll_joint",
+#   "left_hip_yaw_joint", "right_hip_yaw_joint", "waist_pitch_joint",
+#   "left_knee_joint", "right_knee_joint",
+#   "left_shoulder_pitch_joint", "right_shoulder_pitch_joint",
+#   "left_ankle_pitch_joint", "right_ankle_pitch_joint",
+#   "left_shoulder_roll_joint", "right_shoulder_roll_joint",
+#   "left_ankle_roll_joint", "right_ankle_roll_joint",
+#   "left_shoulder_yaw_joint", "right_shoulder_yaw_joint",
+#   "left_elbow_joint", "right_elbow_joint",
+#   "left_wrist_roll_joint", "right_wrist_roll_joint",
+#   "left_wrist_pitch_joint", "right_wrist_pitch_joint",
+#   "left_wrist_yaw_joint", "right_wrist_yaw_joint",
+# ]
+
+# Action scales in sdk_joint_order.
+action_scale: [
+  0.5475464652142303, 0.3506614663788243, 0.5475464652142303, 0.3506614663788243, 0.43857731392336724, 0.43857731392336724,
+  0.5475464652142303, 0.3506614663788243, 0.5475464652142303, 0.3506614663788243, 0.43857731392336724, 0.43857731392336724,
+  0.5475464652142303, 0.43857731392336724, 0.43857731392336724,
+  0.43857731392336724, 0.43857731392336724, 0.43857731392336724, 0.43857731392336724, 0.43857731392336724, 0.07450087032950714, 0.07450087032950714,
+  0.43857731392336724, 0.43857731392336724, 0.43857731392336724, 0.43857731392336724, 0.43857731392336724, 0.07450087032950714, 0.07450087032950714,
+]
+
+# RUN_POLICY_STATE gains in sdk_joint_order.
+kp_policy: [
+  40.17923847137318, 99.09842777666113, 40.17923847137318, 99.09842777666113, 28.50124619574858, 28.50124619574858,
+  40.17923847137318, 99.09842777666113, 40.17923847137318, 99.09842777666113, 28.50124619574858, 28.50124619574858,
+  40.17923847137318, 28.50124619574858, 28.50124619574858,
+  14.25062309787429, 14.25062309787429, 14.25062309787429, 14.25062309787429, 14.25062309787429, 16.77832748089279, 16.77832748089279,
+  14.25062309787429, 14.25062309787429, 14.25062309787429, 14.25062309787429, 14.25062309787429, 16.77832748089279, 16.77832748089279,
+]
+
+kd_policy: [
+  2.5578897650279457, 6.3088018534966395, 2.5578897650279457, 6.3088018534966395, 1.814445686584846, 1.814445686584846,
+  2.5578897650279457, 6.3088018534966395, 2.5578897650279457, 6.3088018534966395, 1.814445686584846, 1.814445686584846,
+  2.5578897650279457, 1.814445686584846, 1.814445686584846,
+  0.907222843292423, 0.907222843292423, 0.907222843292423, 0.907222843292423, 0.907222843292423, 1.06814150219, 1.06814150219,
+  0.907222843292423, 0.907222843292423, 0.907222843292423, 0.907222843292423, 0.907222843292423, 1.06814150219, 1.06814150219,
+]
+
+# MOVE_TO_DEFAULT_STATE gains in sdk_joint_order.
+kp_fixed_stand: [
+  100.0, 100.0, 100.0, 150.0, 40.0, 40.0,
+  100.0, 100.0, 100.0, 150.0, 40.0, 40.0,
+  200.0, 200.0, 200.0,
+  40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0,
+  40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0,
+]
+
+kd_fixed_stand: [
+  2.0, 2.0, 2.0, 4.0, 2.0, 2.0,
+  2.0, 2.0, 2.0, 4.0, 2.0, 2.0,
+  5.0, 5.0, 5.0,
+  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+]
+
+# DAMPING_STATE damping gains in sdk_joint_order. kp is always zero in damping.
+kd_damping: [
+  2.0, 2.0, 2.0, 4.0, 2.0, 2.0,
+  2.0, 2.0, 2.0, 4.0, 2.0, 2.0,
+  5.0, 5.0, 5.0,
+  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+]

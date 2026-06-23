@@ -1,0 +1,16 @@
+default: vanilla_ppo_flat
+
+ckpts:
+  vanilla_ppo_flat: "./vanilla_ppo_flat"
+  unitree_rl_lab_flat: "./unitree_rl_lab_flat"
+
+switch:
+  enabled: true
+  button: B
+  order: [vanilla_ppo_flat, unitree_rl_lab_flat]
+  # Only allow switching while a policy is already running.
+  # Pressing B changes the active policy in the order above.
+  only_when: [run_policy]
+  # null means stay in the current controller state after switching.
+  # With only_when=[run_policy], the next control step runs the new policy directly.
+  on_switch: null

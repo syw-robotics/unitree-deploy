@@ -1,1 +1,13 @@
 __pycache__
+*.egg-info/
+build/
+dist/
+
+stubs
+
+MUJOCO_LOG.TXT
+
+.vscode
+.codex
+.venv
+.agents
