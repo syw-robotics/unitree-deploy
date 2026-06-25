@@ -51,35 +51,61 @@ environment.
 
 ## 🕹️ Quick Start
 
-Run the MuJoCo-to-DDS bridge:
+- Run the MuJoCo-to-DDS bridge:
 
-```bash
-unitree-sim-bridge --robot g1
-```
+    ```bash
+    unitree-sim-bridge --robot g1
+    ```
 
-Run a controller against the simulator:
+- Run a controller against the simulator:
 
-```bash
-unitree-controller --mode sim --ckpt ckpt/g1/vanilla_ppo_flat
-```
+    ```bash
+    unitree-controller --mode sim --ckpt ckpt/g1/vanilla_ppo_flat
+    ```
 
-Run with a multi-policy manifest:
+- Run with a multi-policy manifest:
 
-```bash
-unitree-controller --mode sim --multi-ckpt ckpt/g1/multi_ckpt.yaml
-```
+    ```bash
+    unitree-controller --mode sim --multi-ckpt ckpt/g1/multi_ckpt.yaml
+    ```
 
-Start the viser visualizer:
+- Start the viser visualizer:
 
-```bash
-unitree-visualizer --mode sim --robot g1
-```
+    ```bash
+    unitree-visualizer --mode sim --robot g1
+    ```
 
-For real hardware, pass the DDS network interface explicitly:
+- Record a MuJoCo/DDS trajectory for rendering or analysis:
 
-```bash
-unitree-controller --mode real --net <interface> --ckpt ckpt/g1/vanilla_ppo_flat
-```
+    ```bash
+    unitree-trajectory-recorder \
+      --robot g1 \
+      --out export/runs/g1_walk \
+      --record-hz 30
+    ```
+
+    Run it in a separate terminal while `unitree-sim-bridge` and the controller are
+    running:
+
+    ```bash
+    unitree-sim-bridge --robot g1
+    unitree-controller --mode sim --ckpt ckpt/g1/vanilla_ppo_flat
+    ```
+
+    Press `o` in the recorder process to start recording, then press `o` again to
+    stop and save. Each recording is written under a timestamped subdirectory such
+    as `export/runs/g1_walk/20260629-153012/`, containing `trajectory.npz`,
+    `metadata.json`, and `scene.json`.
+
+- For browser-based policy presentation, use the separate [`policy-web-viewer`](https://github.com/syw-robotics/policy-web-viewer) project:
+
+    Check it out at [here](https://syw-robotics.github.io/policy-web-viewer/)
+
+- For real hardware, pass the DDS network interface explicitly:
+
+    ```bash
+    unitree-controller --mode real --net <interface> --ckpt ckpt/g1/vanilla_ppo_flat
+    ```
 
 ## 🧩 Deployment Folders
 
@@ -93,19 +119,19 @@ ckpt/<robot>/<policy>/
 └── custom_policy.py        # [optional] custom inference/action logic
 ```
 
-Generate a starter folder interactively:
+- Generate a starter folder interactively:
 
-```bash
-unitree-plugin-template
-```
+    ```bash
+    unitree-plugin-template
+    ```
 
-Or script it:
+    Or script it:
 
-```bash
-unitree-plugin-template ckpt --robot g1 --name my_policy
-```
+    ```bash
+    unitree-plugin-template ckpt --robot g1 --name my_policy
+    ```
 
-Key `policy.yaml` fields:
+- Key `policy.yaml` fields:
 
 ```yaml
 policy_path: "policy.onnx"

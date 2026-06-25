@@ -71,6 +71,15 @@ unitree-controller --mode sim --multi-ckpt ckpt/g1/multi_ckpt.yaml
 unitree-visualizer --mode sim --robot g1
 ```
 
+浏览器里的 policy 展示已经移到独立的 `web_policy` 项目：
+
+```bash
+cd /home/syw/.gitrepos/web_policy
+web-policy --robot g1 --ckpt /home/syw/.gitrepos/unitree-deploy/ckpt/g1/vanilla_ppo_flat
+```
+
+打开 `http://127.0.0.1:8000` 查看。
+
 真机运行时需要显式指定 DDS 网卡：
 
 ```bash

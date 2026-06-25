@@ -11,3 +11,5 @@ MUJOCO_LOG.TXT
 .codex
 .venv
 .agents
+
+export/

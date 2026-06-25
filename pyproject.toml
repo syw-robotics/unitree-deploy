@@ -21,6 +21,7 @@ viewer = [
 [project.scripts]
 unitree-controller = "unitree_deploy.cli.controller:main"
 unitree-plugin-template = "unitree_deploy.cli.plugin_template:main"
+unitree-trajectory-recorder = "unitree_deploy.cli.trajectory_recorder:main"
 unitree-sim-bridge = "unitree_deploy.cli.sim_bridge:main"
 unitree-visualizer = "unitree_deploy.cli.visualizer:main"
 
