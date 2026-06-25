@@ -30,8 +30,6 @@ class MotionTrackingPolicy(BasePolicy):
             providers=providers,
             observation_types=observation_types,
         )
-        for observation in self.observation.observations:
-            setattr(observation, "policy", self)
         self.time_input_name = str(self.config.get("time_input_name", "time_step"))
         self.reference_output_names = list(
             self.config.get(
@@ -46,6 +44,9 @@ class MotionTrackingPolicy(BasePolicy):
                 ],
             )
         )
+        self._validate_onnx_contract()
+        for observation in self.observation.observations:
+            setattr(observation, "policy", self)
         self._zero_obs = np.zeros((1, self.observation.size), dtype=np.float32)
         self._time_input = np.zeros((1, 1), dtype=np.float32)
         self._refresh_motion_reference()
@@ -99,3 +100,63 @@ class MotionTrackingPolicy(BasePolicy):
         )
         self.time_step += 1
         return self.target_q
+
+    def _validate_onnx_contract(self) -> None:
+        input_names = {input_info.name: input_info for input_info in self.session.get_inputs()}
+        if self.input_name not in input_names:
+            raise ValueError(f"ONNX model has no policy input {self.input_name!r}")
+        if self.time_input_name not in input_names:
+            raise ValueError(f"ONNX model has no time input {self.time_input_name!r}")
+
+        obs_shape = input_names[self.input_name].shape
+        if len(obs_shape) >= 2 and isinstance(obs_shape[1], int) and obs_shape[1] != self.observation.size:
+            raise ValueError(
+                f"ONNX obs input expects {obs_shape[1]} values, "
+                f"policy.yaml builds {self.observation.size}"
+            )
+
+        output_names = {output_info.name: output_info for output_info in self.session.get_outputs()}
+        required_outputs = [self.action_output_name, *self.reference_output_names]
+        missing_outputs = [name for name in required_outputs if name not in output_names]
+        if missing_outputs:
+            raise ValueError(f"ONNX model missing outputs: {missing_outputs}")
+
+        action_shape = output_names[self.action_output_name].shape
+        if len(action_shape) >= 2 and isinstance(action_shape[1], int) and action_shape[1] != self.action_dim:
+            raise ValueError(
+                f"ONNX action output has dim {action_shape[1]}, "
+                f"policy.yaml action_dim is {self.action_dim}"
+            )
+
+        metadata = self.session.get_modelmeta().custom_metadata_map or {}
+        joint_names = _metadata_csv(metadata, "joint_names")
+        if joint_names:
+            if joint_names != self.obs_joint_order:
+                raise ValueError("obs_joint_order must match ONNX metadata joint_names")
+            if joint_names != self.action_joint_order:
+                raise ValueError("action_joint_order must match ONNX metadata joint_names")
+
+        observation_names = _metadata_csv(metadata, "observation_names")
+        if observation_names:
+            configured_names = [
+                _ONNX_OBSERVATION_NAME.get(spec["type"], spec["type"])
+                for spec in self.config["observations"]
+            ]
+            if observation_names != configured_names:
+                raise ValueError(
+                    "policy.yaml observations do not match ONNX metadata "
+                    f"observation_names: {configured_names} != {observation_names}"
+                )
+
+
+_ONNX_OBSERVATION_NAME = {
+    "motion_command": "command",
+    "base_lin_vel_zero": "base_lin_vel",
+    "joint_pos_rel": "joint_pos",
+    "prev_action": "actions",
+}
+
+
+def _metadata_csv(metadata: dict[str, str], key: str) -> list[str]:
+    value = metadata.get(key, "")
+    return [item.strip() for item in value.split(",") if item.strip()]

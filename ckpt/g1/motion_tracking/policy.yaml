@@ -4,7 +4,7 @@
 
 robot: g1
 policy_path: "policy.onnx"
-policy_class: "custom_policy:MotionTrackingPolicy"
+policy_class: "mjlab_motion_tracking_policy:MotionTrackingPolicy"
 
 policy_step_dt: 0.02
 physics_dt: 0.001
@@ -23,6 +23,7 @@ reference_output_names:
   - body_lin_vel_w
   - body_ang_vel_w
 
+# obs/action order matches ONNX metadata joint_names from mjlab robot.joint_names.
 obs_joint_order: [
   "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
   "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
@@ -51,7 +52,7 @@ obs_use_scaled_prev_action: false
 obs_prime_on_reset: true
 obs_group_concat_mode: term_major
 observation_modules:
-  - custom_observations
+  - mjlab_motion_tracking_observations
 observation_types:
   base_ang_vel: "unitree_deploy.obs.observation:BaseAngularVelocityObservation"
   joint_pos_rel: "unitree_deploy.obs.observation:JointPositionObservation"

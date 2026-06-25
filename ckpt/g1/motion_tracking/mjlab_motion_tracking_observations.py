@@ -61,6 +61,8 @@ class MotionAnchorPositionObservation(ObservationBase):
 
     def compute(self, context: ObservationContext) -> np.ndarray:
         del context
+        # The deployed ONNX has the full 160-dim actor layout; no-state runs
+        # fill unavailable state-estimation terms with zeros.
         return np.zeros(3, dtype=self.dtype)
 
 
@@ -82,6 +84,8 @@ class BaseLinearVelocityZeroObservation(ObservationBase):
 
     def compute(self, context: ObservationContext) -> np.ndarray:
         del context
+        # See MotionAnchorPositionObservation: this preserves the exported
+        # 160-dim ONNX contract when base linear velocity is unavailable.
         return np.zeros(3, dtype=self.dtype)
 
 
