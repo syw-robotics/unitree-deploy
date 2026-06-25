@@ -1,0 +1,149 @@
+#
+# Go2 Perceptive Locomotion Policy with Depth Vision
+#
+
+policy_path: "policy.onnx"
+
+policy_step_dt: 0.02
+physics_dt: 0.001
+decimation: 20
+
+# Camera configuration
+camera:
+  type: depth
+
+  # Camera pose relative to base_link (x, y, z, qw, qx, qy, qz)
+  transform:
+    position: [0.28, 0.0, 0.05]
+    quaternion: [1.0, 0.0, 0.0, 0.0]
+
+  # Camera intrinsics
+  intrinsics:
+    width: 58
+    height: 87
+    fov: 87.0
+    near: 0.1
+    far: 3.0
+
+  # Depth preprocessing
+  preprocessing:
+    clip_range: [0.1, 3.0]
+    normalize_mode: "clip_scale"  # (value - near) / (far - near)
+    fill_invalid: 3.0
+
+  # Update rate (Hz)
+  update_rate: 10.0
+
+obs_joint_order: [
+  'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
+  'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
+  'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
+  'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
+]
+
+sdk_joint_order: [
+  'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
+  'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
+  'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
+  'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
+]
+
+default_qpos: [
+  -0.1, 0.8, -1.5,
+  0.1, 0.8, -1.5,
+  -0.1, 1.0, -1.5,
+  0.1, 1.0, -1.5,
+]
+
+policy_input_name: "obs"
+policy_output_name: "actions"
+
+obs_use_scaled_prev_action: false
+obs_prime_on_reset: true
+obs_group_concat_mode: term_major
+
+observation_types:
+  base_ang_vel: "unitree_deploy.obs.observation:BaseAngularVelocityObservation"
+  projected_gravity: "unitree_deploy.obs.observation:ProjectedGravityObservation"
+  command: "unitree_deploy.obs.observation:CommandObservation"
+  joint_pos_rel: "unitree_deploy.obs.observation:JointPositionObservation"
+  joint_vel: "unitree_deploy.obs.observation:JointVelocityObservation"
+  prev_action: "unitree_deploy.obs.observation:PreviousActionObservation"
+  depth: "unitree_deploy.obs.depth_observation:DepthObservation"
+
+observations:
+  - type: base_ang_vel
+    history_len: 1
+    scale: 0.25
+  - type: projected_gravity
+    history_len: 1
+  - type: command
+    history_len: 1
+    command_range:
+      - [-1.0, 1.0]
+      - [-0.5, 0.5]
+      - [-2.0, 2.0]
+  - type: joint_pos_rel
+    history_len: 1
+  - type: joint_vel
+    history_len: 1
+    scale: 0.05
+  - type: prev_action
+    history_len: 1
+  - type: depth
+    history_len: 1
+    params:
+      height: 87
+      width: 58
+
+action_dim: 12
+action_clip: 10.0
+
+action_joint_order: [
+  'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
+  'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
+  'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
+  'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
+]
+
+action_scale: [
+  0.125, 0.25, 0.25,
+  0.125, 0.25, 0.25,
+  0.125, 0.25, 0.25,
+  0.125, 0.25, 0.25,
+]
+
+kp_policy: [
+  25.0, 25.0, 25.0,
+  25.0, 25.0, 25.0,
+  25.0, 25.0, 25.0,
+  25.0, 25.0, 25.0,
+]
+
+kd_policy: [
+  0.5, 0.5, 0.5,
+  0.5, 0.5, 0.5,
+  0.5, 0.5, 0.5,
+  0.5, 0.5, 0.5,
+]
+
+kp_fixed_stand: [
+  50.0, 50.0, 50.0,
+  50.0, 50.0, 50.0,
+  50.0, 50.0, 50.0,
+  50.0, 50.0, 50.0,
+]
+
+kd_fixed_stand: [
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+]
+
+kd_damping: [
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+]

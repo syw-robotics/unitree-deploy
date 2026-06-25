@@ -5,6 +5,7 @@ import struct
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import mujoco
 import numpy as np
@@ -54,6 +55,8 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_deploy.utils.terminal_status import ComponentConsole
 from unitree_deploy.utils.viewer_backend import create_viewer_backend
+from unitree_deploy.runtime.depth_camera import MujocoDepthCamera
+from unitree_deploy.runtime.depth_buffer import DepthObservationBuffer
 
 
 console = ComponentConsole("sim_bridge", "cyan")
@@ -130,6 +133,7 @@ class RuntimeConfig:
     viewer: str
     band_sites: tuple[str, ...]
     band_enabled: bool
+    policy_dir: Path | None = None  # Optional policy directory for camera support
 
 
 class LoopTimer:
@@ -239,6 +243,11 @@ class SimBridge:
         self.lowcmd_sub = ChannelSubscriber(LOWCMD_TOPIC, LowCmd_)
         self.lowcmd_sub.Init(self.on_lowcmd)
 
+        # Depth camera support
+        self.depth_camera = None
+        self.depth_buffer = None
+        self._init_depth_camera()
+
         self.state_thread = threading.Thread(target=self.publish_state_loop, daemon=False)
 
         self.keyboard.set_control_handler(self.handle_control_key)
@@ -246,6 +255,46 @@ class SimBridge:
 
         signal.signal(signal.SIGINT, self.close)
         signal.signal(signal.SIGTERM, self.close)
+
+    def _init_depth_camera(self) -> None:
+        """Initialize depth camera if policy directory is provided."""
+        if not self.config.policy_dir:
+            return
+
+        from unitree_deploy.utils.yaml_utils import load_yaml
+
+        policy_yaml = self.config.policy_dir / "policy.yaml"
+        if not policy_yaml.exists():
+            return
+
+        config = load_yaml(policy_yaml)
+        camera_config = config.get("camera")
+        if not camera_config:
+            return
+
+        intrinsics = camera_config["intrinsics"]
+        preprocessing = camera_config["preprocessing"]
+
+        self.depth_buffer = DepthObservationBuffer(
+            height=intrinsics["height"],
+            width=intrinsics["width"],
+        )
+
+        self.depth_camera = MujocoDepthCamera(
+            self.model,
+            self.data,
+            camera_name="depth_camera",
+            height=intrinsics["height"],
+            width=intrinsics["width"],
+            fov=intrinsics["fov"],
+            near=intrinsics["near"],
+            far=intrinsics["far"],
+            clip_range=tuple(preprocessing["clip_range"]),
+            normalize_mode=preprocessing["normalize_mode"],
+            fill_invalid=preprocessing["fill_invalid"],
+        )
+
+        log(f"Depth camera initialized: {intrinsics['width']}x{intrinsics['height']}")
 
     # ----- MuJoCo model lookup helpers -----
 
@@ -562,6 +611,7 @@ class SimBridge:
         timer = LoopTimer(SIM_HZ)
         last_log = time.perf_counter()
         steps = 0
+        depth_update_interval = int(SIM_HZ / 10) if self.depth_camera else 0  # 10Hz
 
         while self.alive:
             if not self.simulation_paused:
@@ -570,6 +620,11 @@ class SimBridge:
                     self.apply_band()
                     self.data.ctrl[:] = self.compute_ctrl()
                     mujoco.mj_step(self.model, self.data)
+
+                    # Update depth camera at 10Hz
+                    if self.depth_camera and steps % depth_update_interval == 0:
+                        depth_image = self.depth_camera.capture()
+                        self.depth_buffer.update(depth_image)
 
             if not self.viewer_backend.sync():
                 self.alive = False
