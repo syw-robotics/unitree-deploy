@@ -53,10 +53,20 @@ uv sync --extra viewer
 unitree-sim-bridge --robot g1
 ```
 
+如果需要仿真传感器，启动 sim bridge 时传入 sensor 配置，运行时会注入
+MuJoCo 相机：
+
+```bash
+unitree-sim-bridge --robot go2 --terrain rough --sensor ckpt/go2/perceptive_locomotion/sensor_depth_camera.yaml
+```
+
+对于仿真深度相机，bridge 会同时打开实时深度图预览窗口；不需要时可以加
+`--no-depth-preview`。
+
 启动仿真 controller：
 
 ```bash
-unitree-controller --mode sim --ckpt ckpt/g1/vanilla_ppo_flat
+unitree-controller --mode sim --ckpt ckpt/g1/vanilla_ppo_flat/policy.yaml
 ```
 
 使用 multi-policy 配置：
@@ -74,7 +84,7 @@ unitree-visualizer --mode sim --robot g1
 真机运行时需要显式指定 DDS 网卡：
 
 ```bash
-unitree-controller --mode real --net <interface> --ckpt ckpt/g1/vanilla_ppo_flat
+unitree-controller --mode real --net <interface> --ckpt ckpt/g1/vanilla_ppo_flat/policy.yaml
 ```
 
 ## 🧩 部署目录

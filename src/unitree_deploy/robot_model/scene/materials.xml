@@ -5,8 +5,8 @@
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
 
-    <texture type="2d" name="rough_groundplane" builtin="checker" mark="edge" rgb1="0.23 0.25 0.24" rgb2="0.12 0.14 0.13" markrgb="0.65 0.65 0.65" width="300" height="300"/>
-    <material name="rough_groundplane" texture="rough_groundplane" texuniform="true" texrepeat="6 6" reflectance="0.12"/>
-    <material name="rough_block" rgba="0.34 0.36 0.34 1"/>
+    <!-- <texture type="2d" name="rough_groundplane" builtin="checker" mark="edge" rgb1="0.23 0.25 0.24" rgb2="0.12 0.14 0.13" markrgb="0.65 0.65 0.65" width="300" height="300"/> -->
+    <!-- <material name="rough_groundplane" texture="rough_groundplane" texuniform="true" texrepeat="6 6" reflectance="0.12"/> -->
+    <material name="rough_obstacles" rgba="0.35 0.35 0.35 1.0"/>
   </asset>
 </mujoco>

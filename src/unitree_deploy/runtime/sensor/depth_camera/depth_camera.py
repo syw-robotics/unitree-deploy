@@ -18,6 +18,7 @@ class DepthCameraBase(ABC):
         clip_range: tuple[float, float],
         normalize_mode: str,
         fill_invalid: float,
+        crop: tuple[int, int, int, int] = (0, 0, 0, 0),
     ) -> None:
         self.height = height
         self.width = width
@@ -27,6 +28,14 @@ class DepthCameraBase(ABC):
         self.clip_range = clip_range
         self.normalize_mode = normalize_mode
         self.fill_invalid = fill_invalid
+        self.crop_top, self.crop_bottom, self.crop_left, self.crop_right = crop
+        self.output_height = self.height - self.crop_top - self.crop_bottom
+        self.output_width = self.width - self.crop_left - self.crop_right
+        if self.output_height <= 0 or self.output_width <= 0:
+            raise ValueError(
+                "depth crop removes the full image: "
+                f"height={self.height}, width={self.width}, crop={crop}"
+            )
 
     @abstractmethod
     def read_depth(self) -> np.ndarray:
@@ -36,6 +45,11 @@ class DepthCameraBase(ABC):
     def preprocess_depth(self, depth_raw: np.ndarray) -> np.ndarray:
         """Apply preprocessing to raw depth image."""
         depth = depth_raw.copy()
+
+        if any((self.crop_top, self.crop_bottom, self.crop_left, self.crop_right)):
+            bottom = self.height - self.crop_bottom if self.crop_bottom else self.height
+            right = self.width - self.crop_right if self.crop_right else self.width
+            depth = depth[self.crop_top:bottom, self.crop_left:right]
 
         # Handle invalid values
         invalid_mask = np.isnan(depth) | np.isinf(depth)
@@ -75,17 +89,16 @@ class MujocoDepthCamera(DepthCameraBase):
 
         if self._renderer is None:
             self._renderer = mujoco.Renderer(self.mj_model, self.height, self.width)
+            self._renderer.enable_depth_rendering()
 
         self._renderer.update_scene(self.mj_data, camera=self.camera_name)
-        depth_buffer = self._renderer.render()
+        return self._renderer.render()
 
-        # Mujoco depth is in range [-1, 1], convert to meters
-        extent = self.mj_model.stat.extent
-        near = self.mj_model.vis.map.znear * extent
-        far = self.mj_model.vis.map.zfar * extent
-        depth_meters = near / (1 - depth_buffer * (1 - near / far))
-
-        return depth_meters
+    def close(self) -> None:
+        """Release MuJoCo renderer resources."""
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
 
 
 class RealSenseDepthCamera(DepthCameraBase):

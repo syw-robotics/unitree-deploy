@@ -19,7 +19,7 @@ from unitree_deploy.config.defaults import (
 )
 from unitree_deploy.obs.observation import ObservationContext
 from unitree_deploy.robot_model.robot_config import DEFAULT_ROBOT
-from unitree_deploy.runtime.multi_ckpt import PolicyManager
+from unitree_deploy.runtime.multi_ckpt import PolicyManager, resolve_policy_yaml
 from unitree_deploy.runtime.controller_state_machine import (
     ControllerStateMachine,
     load_state_machine_config,
@@ -66,7 +66,7 @@ class LoopTimer:
 class RuntimeConfig:
     mode: str
     net: str | None
-    ckpt_dir: Path
+    policy_yaml: Path | None
     robot: str | None
     multi_ckpt: Path | None = None
     state_machine: Path | None = None
@@ -107,8 +107,8 @@ class Controller:
 
     def __init__(self, config: RuntimeConfig):
         self.config = config
-        self.ckpt_dir = config.ckpt_dir.expanduser().resolve()
-        self.policy_manager = PolicyManager.load(self.ckpt_dir, config.multi_ckpt)
+        self.policy_yaml = config.policy_yaml.expanduser().resolve() if config.policy_yaml is not None else None
+        self.policy_manager = PolicyManager.load(self.policy_yaml, config.multi_ckpt)
         self.robot = config.robot or self.active_profile.policy.config.get("robot", DEFAULT_ROBOT)
 
         self.lowcmd_topic = LOWCMD_TOPIC
@@ -142,7 +142,7 @@ class Controller:
         if config.mode == "real":
             self.enter_debug_mode()
 
-        state_machine_base = config.multi_ckpt.parent if config.multi_ckpt else self.ckpt_dir
+        state_machine_base = config.multi_ckpt.parent if config.multi_ckpt else self.policy_yaml.parent
         state_machine_path = resolve_state_machine_path(state_machine_base, config.state_machine)
         state_machine_config = load_state_machine_config(state_machine_path)
         self.state_machine_path = state_machine_path
@@ -378,26 +378,30 @@ def parse_args() -> RuntimeConfig:
     parser.add_argument("--mode", choices=("real", "sim"), default=DEFAULT_MODE)
     parser.add_argument("--net", default=DEFAULT_NET, help="DDS network interface. Use lo for local sim.")
     parser.add_argument("--robot", help="Robot name for logs. Defaults to controller.yaml robot.")
-    parser.add_argument("--ckpt", type=Path, help="Checkpoint directory containing policy.yaml.")
+    parser.add_argument(
+        "--ckpt",
+        type=Path,
+        help="Policy YAML path. Directories are accepted for compatibility and resolve to policy.yaml.",
+    )
     parser.add_argument(
         "--multi-ckpt",
         type=Path,
-        help="YAML manifest containing multiple ckpt directories.",
+        help="YAML manifest containing multiple policy YAML paths.",
     )
     parser.add_argument(
         "--state-machine",
         type=Path,
-        help="Optional YAML state machine. Defaults to state_machine.yaml beside the ckpt or multi-ckpt YAML.",
+        help="Optional YAML state machine. Defaults to state_machine.yaml beside the policy or multi-ckpt YAML.",
     )
     args = parser.parse_args()
     if args.ckpt is None and args.multi_ckpt is None:
         parser.error("one of --ckpt or --multi-ckpt is required")
 
-    ckpt_dir = args.ckpt or args.multi_ckpt.expanduser().resolve().parent
+    policy_yaml = resolve_policy_yaml(Path("."), args.ckpt) if args.ckpt is not None else None
     return RuntimeConfig(
         mode=args.mode,
         net=args.net,
-        ckpt_dir=ckpt_dir,
+        policy_yaml=policy_yaml,
         robot=args.robot,
         multi_ckpt=args.multi_ckpt,
         state_machine=args.state_machine,

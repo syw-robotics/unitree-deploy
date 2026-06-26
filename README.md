@@ -57,10 +57,20 @@ Run the MuJoCo-to-DDS bridge:
 unitree-sim-bridge --robot g1
 ```
 
+For simulated sensors, pass a sensor config to inject the MuJoCo camera at
+runtime:
+
+```bash
+unitree-sim-bridge --robot go2 --terrain rough --sensor ckpt/go2/perceptive_locomotion/sensor_depth_camera.yaml
+```
+
+The bridge also opens a live depth preview window for simulated depth cameras.
+Use `--no-depth-preview` to disable it.
+
 Run a controller against the simulator:
 
 ```bash
-unitree-controller --mode sim --ckpt ckpt/g1/vanilla_ppo_flat
+unitree-controller --mode sim --ckpt ckpt/g1/vanilla_ppo_flat/policy.yaml
 ```
 
 Run with a multi-policy manifest:
@@ -78,7 +88,7 @@ unitree-visualizer --mode sim --robot g1
 For real hardware, pass the DDS network interface explicitly:
 
 ```bash
-unitree-controller --mode real --net <interface> --ckpt ckpt/g1/vanilla_ppo_flat
+unitree-controller --mode real --net <interface> --ckpt ckpt/g1/vanilla_ppo_flat/policy.yaml
 ```
 
 ## 🧩 Deployment Folders

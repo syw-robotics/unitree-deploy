@@ -185,6 +185,27 @@ class BasePolicy:
         elif observation_type == "prev_action":
             kwargs["action_dim"] = self.action_dim
             kwargs.update(params)
+        elif observation_type == "depth":
+            kwargs.update(params)
+            camera_config = self.config.get("camera")
+            if isinstance(camera_config, dict):
+                if "height" not in kwargs or "width" not in kwargs:
+                    intrinsics = camera_config.get("intrinsics", {})
+                    preprocessing = camera_config.get("preprocessing", {})
+                    if not isinstance(intrinsics, dict) or not isinstance(preprocessing, dict):
+                        raise TypeError("camera.intrinsics and camera.preprocessing must be mappings")
+                    from unitree_deploy.runtime.sensor.depth_camera.config import parse_depth_crop
+
+                    crop_top, crop_bottom, crop_left, crop_right = parse_depth_crop(preprocessing)
+                    kwargs.setdefault("height", int(intrinsics["height"]) - crop_top - crop_bottom)
+                    kwargs.setdefault("width", int(intrinsics["width"]) - crop_left - crop_right)
+                if "shared_memory_name" not in kwargs:
+                    from unitree_deploy.runtime.sensor.depth_camera.config import camera_shared_memory_name
+
+                    kwargs["shared_memory_name"] = camera_shared_memory_name(
+                        self.policy_yaml_path,
+                        camera_config,
+                    )
         else:
             kwargs.update(params)
 

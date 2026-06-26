@@ -60,10 +60,12 @@ class PolicyManager:
         return self.profiles[self.active_name]
 
     @classmethod
-    def load(cls, ckpt_dir: Path, multi_ckpt: Path | None = None) -> PolicyManager:
-        ckpt_dir = ckpt_dir.expanduser().resolve()
+    def load(cls, policy_yaml: Path | None, multi_ckpt: Path | None = None) -> PolicyManager:
         if multi_ckpt is None:
-            profile = build_ckpt_profile("default", ckpt_dir / "policy.yaml")
+            if policy_yaml is None:
+                raise ValueError("policy_yaml is required when multi_ckpt is not set")
+            policy_yaml = policy_yaml.expanduser().resolve()
+            profile = build_ckpt_profile("default", policy_yaml)
             return cls(
                 {"default": profile},
                 "default",
@@ -114,7 +116,7 @@ def load_multi_ckpt_profiles(base_dir: Path, config: dict) -> tuple[dict[str, Ck
 
 
 def resolve_policy_yaml(base_dir: Path, spec) -> Path:
-    if isinstance(spec, str):
+    if isinstance(spec, (str, Path)):
         path = base_dir / spec
     elif isinstance(spec, dict):
         if "policy_yaml" in spec:
@@ -126,7 +128,7 @@ def resolve_policy_yaml(base_dir: Path, spec) -> Path:
         else:
             raise KeyError("ckpt spec must define one of: policy_yaml, ckpt, path")
     else:
-        raise TypeError("ckpt spec must be a string or mapping")
+        raise TypeError("ckpt spec must be a path string or mapping")
 
     path = path.expanduser()
     if path.is_dir():

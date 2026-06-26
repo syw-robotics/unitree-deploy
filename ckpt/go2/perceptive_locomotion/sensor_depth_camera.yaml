@@ -1,0 +1,39 @@
+#
+# Depth camera sensor configuration
+#
+
+camera:
+  type: depth
+  source: mujoco
+  name: depth_camera
+  attach_body: base_link
+  shared_memory_name: unitree_depth_go2_perceptive_locomotion
+
+  # Update rate (Hz)
+  update_rate: 10.0
+
+  # Camera pose relative to base_link (x, y, z, roll, pitch, yaw)
+  transform:
+    position: [0.35, 0.0, 0.08]
+    rpy: [70.0, 0.0, -90.0]
+    degrees: true
+
+  # Camera intrinsics
+  intrinsics:
+    width: 87
+    height: 58
+    fovy: 87.0
+    near: 0.1
+    far: 2.0
+
+  # Depth preprocessing
+  preprocessing:
+    crop:
+      top: 2
+      bottom: 2
+      left: 2
+      right: 2
+    clip_range: [0.1, 2.0]
+    normalize_mode: "clip_scale"  # (value - near) / (far - near)
+    fill_invalid: 2.0
+

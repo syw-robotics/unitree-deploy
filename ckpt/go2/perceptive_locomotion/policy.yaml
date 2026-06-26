@@ -8,32 +8,6 @@ policy_step_dt: 0.02
 physics_dt: 0.001
 decimation: 20
 
-# Camera configuration
-camera:
-  type: depth
-
-  # Camera pose relative to base_link (x, y, z, qw, qx, qy, qz)
-  transform:
-    position: [0.28, 0.0, 0.05]
-    quaternion: [1.0, 0.0, 0.0, 0.0]
-
-  # Camera intrinsics
-  intrinsics:
-    width: 58
-    height: 87
-    fov: 87.0
-    near: 0.1
-    far: 3.0
-
-  # Depth preprocessing
-  preprocessing:
-    clip_range: [0.1, 3.0]
-    normalize_mode: "clip_scale"  # (value - near) / (far - near)
-    fill_invalid: 3.0
-
-  # Update rate (Hz)
-  update_rate: 10.0
-
 obs_joint_order: [
   'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
   'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
@@ -69,7 +43,8 @@ observation_types:
   joint_pos_rel: "unitree_deploy.obs.observation:JointPositionObservation"
   joint_vel: "unitree_deploy.obs.observation:JointVelocityObservation"
   prev_action: "unitree_deploy.obs.observation:PreviousActionObservation"
-  depth: "unitree_deploy.obs.depth_observation:DepthObservation"
+  depth: "unitree_deploy.obs.exteroception_observation:DepthObservation"
+  height_scan: "unitree_deploy.obs.exteroception_observation:HeightScanObservation"
 
 observations:
   - type: base_ang_vel
@@ -93,8 +68,9 @@ observations:
   - type: depth
     history_len: 1
     params:
-      height: 87
-      width: 58
+      height: 54
+      width: 83
+      shared_memory_name: unitree_depth_go2_perceptive_locomotion
 
 action_dim: 12
 action_clip: 10.0

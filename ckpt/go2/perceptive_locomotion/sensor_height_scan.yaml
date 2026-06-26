@@ -1,0 +1,40 @@
+#
+# Height-scan sensor configuration
+#
+
+height_scan:
+  type: height_scan
+  source: mujoco_raycast
+  name: base_height_scan
+  attach_body: base_link
+  shared_memory_name: unitree_height_scan_go2_perceptive_locomotion
+
+  # Update rate (Hz)
+  update_rate: 20.0
+
+  # Grid settings
+  grid:
+    x_range: [-0.5, 1.0]
+    y_range: [-0.4, 0.4]
+    shape: [15, 11]
+
+  # Ray Settings
+  ray:
+    start_z: 1.0
+    max_distance: 2.0
+    direction: [0.0, 0.0, -1.0]
+    align_to_body_yaw: true
+    static_only: true
+    geom_groups: [0]
+
+  # Height preprocessing
+  preprocessing:
+    mode: base_relative_height
+    clip_range: [-1.0, 1.0]
+    fill_miss: 1.0
+
+  # Height-scan visualization
+  visualization:
+    enabled: true
+    point_size: 0.02
+    rgba: [0.9, 0.5, 0.1, 0.6]

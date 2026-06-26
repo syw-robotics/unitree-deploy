@@ -111,7 +111,7 @@ camera:
 ```
 
 `sim_bridge.py`需要：
-- 读取policy.yaml的camera配置
+- 读取具体 sensor yaml 文件中的camera/height_scan配置
 - 在Mujoco中渲染深度图
 - 应用预处理并更新DepthObservationBuffer
 
@@ -127,20 +127,26 @@ RealSense设置：
 
 ```
 ckpt/go2/perceptive_locomotion/
-├── policy.yaml              # 扩展的配置，包含camera块
+├── policy.yaml              # policy、观测布局和depth输入形状
+├── sensor_depth_camera.yaml # 仿真/真实深度相机配置，包含camera块
+├── sensor_height_scan.yaml  # 仿真高程扫描配置，包含height_scan块
 ├── policy_xxxx.onnx         # ONNX模型文件
 └── README.md                # 说明文档
 
 src/unitree_deploy/obs/
 ├── observation.py           # 现有
-└── depth_observation.py     # 新增：DepthObservation类
+└── exteroception_observation.py     # 新增：DepthObservation类
 
-src/unitree_deploy/runtime/
-├── depth_camera.py          # 新增：相机源抽象
-│   ├── DepthCameraBase
-│   ├── MujocoDepthCamera
-│   └── RealSenseDepthCamera
-└── depth_buffer.py          # 新增：线程安全的深度图缓存
+src/unitree_deploy/runtime/sensor/
+├── config.py                # sensor yaml通用解析
+├── array_buffer.py          # 通用float32 shared memory
+├── depth_camera/
+│   ├── config.py            # 深度相机配置和MuJoCo XML注入
+│   ├── depth_camera.py      # 相机源抽象/MuJoCo/RealSense
+│   ├── depth_buffer.py      # 深度图shared memory适配
+│   └── depth_preview.py     # 仿真深度图预览
+└── height_scan/
+    └── height_scan.py       # MuJoCo raycast高程扫描
 ```
 
 ## 实现优先级
@@ -148,7 +154,7 @@ src/unitree_deploy/runtime/
 1. **Phase 1：基础架构**
    - DepthObservationBuffer（共享缓存）
    - DepthObservation类
-   - policy.yaml的camera配置解析
+   - sensor yaml的camera/height_scan配置解析
 
 2. **Phase 2：Sim支持**
    - MujocoDepthCamera实现

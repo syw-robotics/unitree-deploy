@@ -55,8 +55,23 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_deploy.utils.terminal_status import ComponentConsole
 from unitree_deploy.utils.viewer_backend import create_viewer_backend
-from unitree_deploy.runtime.depth_camera import MujocoDepthCamera
-from unitree_deploy.runtime.depth_buffer import DepthObservationBuffer
+from unitree_deploy.runtime.sensor.depth_camera.depth_camera import MujocoDepthCamera
+from unitree_deploy.runtime.sensor.depth_camera.depth_buffer import SharedDepthObservationBuffer
+from unitree_deploy.runtime.sensor.depth_camera.depth_preview import DepthPreviewConfig, DepthPreviewWindow
+from unitree_deploy.runtime.sensor.depth_camera.config import (
+    camera_shared_memory_name,
+    load_sensor_camera_config,
+    parse_depth_crop,
+    write_model_xml_with_sensor_camera,
+)
+from unitree_deploy.runtime.sensor.array_buffer import SharedArrayObservationBuffer
+from unitree_deploy.runtime.sensor.config import sensor_yaml_path
+from unitree_deploy.runtime.sensor.height_scan.height_scan import (
+    MujocoHeightScanSensor,
+    height_scan_shared_memory_name,
+    is_mujoco_height_scan_source,
+    load_sensor_height_scan_config,
+)
 
 
 console = ComponentConsole("sim_bridge", "cyan")
@@ -133,7 +148,8 @@ class RuntimeConfig:
     viewer: str
     band_sites: tuple[str, ...]
     band_enabled: bool
-    policy_dir: Path | None = None  # Optional policy directory for camera support
+    sensor: Path | None = None
+    depth_preview: bool = True
 
 
 class LoopTimer:
@@ -178,7 +194,18 @@ class SimBridge:
         self.lock = threading.Lock()
         self.cmd_lock = threading.Lock()
 
-        self.model = mujoco.MjModel.from_xml_path(str(self.config.robot.xml_path))
+        self.sensor_yaml_path = sensor_yaml_path(self.config.sensor)
+        self.camera_config = load_sensor_camera_config(self.config.sensor)
+        self.height_scan_config = load_sensor_height_scan_config(self.config.sensor)
+        self.model_xml_path = self.config.robot.xml_path
+        if self.camera_config is not None and self.sensor_yaml_path is not None:
+            self.model_xml_path = write_model_xml_with_sensor_camera(
+                self.config.robot.xml_path,
+                self.sensor_yaml_path,
+                self.camera_config,
+            )
+
+        self.model = mujoco.MjModel.from_xml_path(str(self.model_xml_path))
         self.model.opt.timestep = 1.0 / SIM_HZ
         self.data = mujoco.MjData(self.model)
         # Viewer backend owns GUI/server lifecycle; the physics loop only calls sync().
@@ -243,10 +270,17 @@ class SimBridge:
         self.lowcmd_sub = ChannelSubscriber(LOWCMD_TOPIC, LowCmd_)
         self.lowcmd_sub.Init(self.on_lowcmd)
 
-        # Depth camera support
+        # Exteroceptive sensor support
         self.depth_camera = None
         self.depth_buffer = None
+        self.depth_preview = None
+        self.height_scan = None
+        self.height_scan_buffer = None
+        self.height_scan_visualization_enabled = False
+        self.height_scan_visualization_size = 0.025
+        self.height_scan_visualization_rgba = (0.1, 0.75, 1.0, 0.9)
         self._init_depth_camera()
+        self._init_height_scan()
 
         self.state_thread = threading.Thread(target=self.publish_state_loop, daemon=False)
 
@@ -257,44 +291,109 @@ class SimBridge:
         signal.signal(signal.SIGTERM, self.close)
 
     def _init_depth_camera(self) -> None:
-        """Initialize depth camera if policy directory is provided."""
-        if not self.config.policy_dir:
+        """Initialize depth camera if sensor config is provided."""
+        if self.camera_config is None:
             return
 
-        from unitree_deploy.utils.yaml_utils import load_yaml
-
-        policy_yaml = self.config.policy_dir / "policy.yaml"
-        if not policy_yaml.exists():
-            return
-
-        config = load_yaml(policy_yaml)
-        camera_config = config.get("camera")
-        if not camera_config:
-            return
+        camera_config = self.camera_config
 
         intrinsics = camera_config["intrinsics"]
         preprocessing = camera_config["preprocessing"]
+        crop = parse_depth_crop(preprocessing)
+        output_height = int(intrinsics["height"]) - crop[0] - crop[1]
+        output_width = int(intrinsics["width"]) - crop[2] - crop[3]
+        if output_height <= 0 or output_width <= 0:
+            raise ValueError(
+                "camera.preprocessing.crop removes the full image: "
+                f"height={intrinsics['height']}, width={intrinsics['width']}, crop={crop}"
+            )
 
-        self.depth_buffer = DepthObservationBuffer(
-            height=intrinsics["height"],
-            width=intrinsics["width"],
+        shared_memory_name = camera_shared_memory_name(self.sensor_yaml_path, camera_config)
+        self.depth_buffer = SharedDepthObservationBuffer.create(
+            name=shared_memory_name,
+            height=output_height,
+            width=output_width,
         )
+        self.depth_shared_memory_name = shared_memory_name
 
         self.depth_camera = MujocoDepthCamera(
             self.model,
             self.data,
-            camera_name="depth_camera",
+            camera_name=str(camera_config.get("name", "depth_camera")),
             height=intrinsics["height"],
             width=intrinsics["width"],
-            fov=intrinsics["fov"],
+            fov=intrinsics["fovy"],
             near=intrinsics["near"],
             far=intrinsics["far"],
             clip_range=tuple(preprocessing["clip_range"]),
             normalize_mode=preprocessing["normalize_mode"],
             fill_invalid=preprocessing["fill_invalid"],
+            crop=crop,
+        )
+        if self.config.depth_preview:
+            preview_config = camera_config.get("preview", {})
+            if preview_config is None:
+                preview_config = {}
+            if not isinstance(preview_config, dict):
+                raise TypeError("camera.preview must be a mapping")
+            preview_enabled = bool(preview_config.get("enabled", True))
+            if preview_enabled:
+                self.depth_preview = DepthPreviewWindow(
+                    DepthPreviewConfig(
+                        title=str(preview_config.get("title", "unitree depth camera")),
+                        scale=int(preview_config.get("scale", 4)),
+                        normalize_mode=str(preprocessing["normalize_mode"]),
+                        clip_range=tuple(preprocessing["clip_range"]),
+                    ),
+                    log=log,
+                )
+
+        log(
+            f"Depth camera initialized: {intrinsics['width']}x{intrinsics['height']} "
+            f"-> {output_width}x{output_height} crop={crop} "
+            f"shm={shared_memory_name}"
         )
 
-        log(f"Depth camera initialized: {intrinsics['width']}x{intrinsics['height']}")
+    def _init_height_scan(self) -> None:
+        """Initialize height-scan raycast producer if configured."""
+        if self.height_scan_config is None:
+            return
+        if not is_mujoco_height_scan_source(self.height_scan_config):
+            log(
+                "height scan sensor source is not handled by sim_bridge: "
+                f"source={self.height_scan_config.get('source')!r}"
+            )
+            return
+
+        self.height_scan = MujocoHeightScanSensor(self.model, self.data, self.height_scan_config)
+        shared_memory_name = height_scan_shared_memory_name(
+            self.sensor_yaml_path,
+            self.height_scan_config,
+        )
+        self.height_scan_buffer = SharedArrayObservationBuffer.create(
+            name=shared_memory_name,
+            shape=self.height_scan.shape,
+        )
+        self.height_scan_shared_memory_name = shared_memory_name
+        log(
+            f"Height scan initialized: shape={self.height_scan.shape} "
+            f"attach_body={self.height_scan.attach_body} shm={shared_memory_name}"
+        )
+        self._init_height_scan_visualization()
+
+    def _init_height_scan_visualization(self) -> None:
+        visualization = self.height_scan_config.get("visualization", {})
+        if visualization is None:
+            visualization = {}
+        if not isinstance(visualization, dict):
+            raise TypeError("height_scan.visualization must be a mapping")
+
+        self.height_scan_visualization_enabled = bool(visualization.get("enabled", True))
+        self.height_scan_visualization_size = float(visualization.get("point_size", 0.025))
+        rgba = visualization.get("rgba", [0.1, 0.75, 1.0, 0.9])
+        if not isinstance(rgba, (list, tuple)) or len(rgba) != 4:
+            raise ValueError("height_scan.visualization.rgba must contain four values")
+        self.height_scan_visualization_rgba = tuple(float(value) for value in rgba)
 
     # ----- MuJoCo model lookup helpers -----
 
@@ -610,10 +709,44 @@ class SimBridge:
     def simulate(self) -> None:
         timer = LoopTimer(SIM_HZ)
         last_log = time.perf_counter()
+        last_depth_update = 0.0
+        last_height_scan_update = 0.0
         steps = 0
-        depth_update_interval = int(SIM_HZ / 10) if self.depth_camera else 0  # 10Hz
+        depth_update_interval = 0
+        depth_update_dt = 0.0
+        if self.depth_camera:
+            camera_hz = float(self.camera_config.get("update_rate", 10.0))
+            if camera_hz <= 0.0:
+                raise ValueError("camera.update_rate must be positive")
+            depth_update_interval = max(1, int(round(SIM_HZ / camera_hz)))
+            depth_update_dt = 1.0 / camera_hz
+        height_scan_update_interval = 0
+        height_scan_update_dt = 0.0
+        if self.height_scan:
+            height_scan_hz = float(self.height_scan_config.get("update_rate", 20.0))
+            if height_scan_hz <= 0.0:
+                raise ValueError("height_scan.update_rate must be positive")
+            height_scan_update_interval = max(1, int(round(SIM_HZ / height_scan_hz)))
+            height_scan_update_dt = 1.0 / height_scan_hz
+
+        def update_depth_frame() -> None:
+            depth_image = self.depth_camera.capture()
+            self.depth_buffer.update(depth_image)
+            if self.depth_preview is not None:
+                self.depth_preview.show(depth_image)
+
+        def update_height_scan() -> None:
+            self.height_scan_buffer.update(self.height_scan.capture())
+            if self.height_scan_visualization_enabled:
+                self.viewer_backend.set_height_scan_points(
+                    self.height_scan.hit_points,
+                    self.height_scan.hit_valid,
+                    point_size=self.height_scan_visualization_size,
+                    rgba=self.height_scan_visualization_rgba,
+                )
 
         while self.alive:
+            now = time.perf_counter()
             if not self.simulation_paused:
                 with self.lock:
                     self.data.qfrc_applied[:] = 0.0
@@ -621,10 +754,24 @@ class SimBridge:
                     self.data.ctrl[:] = self.compute_ctrl()
                     mujoco.mj_step(self.model, self.data)
 
-                    # Update depth camera at 10Hz
+                    # Update depth camera at the sensor-configured camera rate.
                     if self.depth_camera and steps % depth_update_interval == 0:
-                        depth_image = self.depth_camera.capture()
-                        self.depth_buffer.update(depth_image)
+                        update_depth_frame()
+                        last_depth_update = now
+                    if self.height_scan and steps % height_scan_update_interval == 0:
+                        update_height_scan()
+                        last_height_scan_update = now
+            elif (
+                (self.depth_camera and now - last_depth_update >= depth_update_dt)
+                or (self.height_scan and now - last_height_scan_update >= height_scan_update_dt)
+            ):
+                with self.lock:
+                    if self.depth_camera and now - last_depth_update >= depth_update_dt:
+                        update_depth_frame()
+                        last_depth_update = now
+                    if self.height_scan and now - last_height_scan_update >= height_scan_update_dt:
+                        update_height_scan()
+                        last_height_scan_update = now
 
             if not self.viewer_backend.sync():
                 self.alive = False
@@ -632,7 +779,6 @@ class SimBridge:
 
             if not self.simulation_paused:
                 steps += 1
-            now = time.perf_counter()
             if now - last_log >= 1.0:
                 if self.simulation_paused:
                     status(
@@ -660,13 +806,31 @@ class SimBridge:
     def run(self) -> None:
         log(
             f"robot={self.config.robot.name} terrain={self.config.robot.terrain} "
-            f"model={self.config.robot.xml_path}"
+            f"model={self.model_xml_path}"
         )
         log(f"topics: lowcmd={LOWCMD_TOPIC}, lowstate={LOWSTATE_TOPIC}, odom={ODOM_TOPIC}")
         log(f"sim={SIM_HZ}Hz state_pub={STATE_HZ}Hz viewer={self.config.viewer}")
         log(f"simulation starts paused; press \"space\" to continue")
         if self.band_on:
             log(f"suspension bands enabled at z={self.band_z:.3f} m")
+        if self.camera_config is not None:
+            transform = self.camera_config.get("transform", {})
+            position = transform.get("position", "default") if isinstance(transform, dict) else "default"
+            rpy = transform.get("rpy", "default") if isinstance(transform, dict) else "default"
+            log(
+                "sensor depth camera enabled: "
+                f"name={self.camera_config.get('name', 'depth_camera')} "
+                f"attach_body={self.camera_config.get('attach_body', 'base_link')} "
+                f"pos={position} rpy={rpy}"
+            )
+        if self.height_scan_config is not None:
+            grid = self.height_scan_config.get("grid", {})
+            log(
+                "sensor height scan enabled: "
+                f"name={self.height_scan_config.get('name', 'height_scan')} "
+                f"attach_body={self.height_scan_config.get('attach_body', 'base_link')} "
+                f"shape={grid.get('shape', 'default') if isinstance(grid, dict) else 'default'}"
+            )
 
         self.state_thread.start()
         # Blocks until the selected viewer or simulation loop exits.
@@ -681,6 +845,14 @@ class SimBridge:
 
         if self.state_thread.is_alive() and threading.current_thread() is not self.state_thread:
             self.state_thread.join(timeout=1.0)
+        if self.depth_camera is not None and hasattr(self.depth_camera, "close"):
+            self.depth_camera.close()
+        if self.depth_buffer is not None and hasattr(self.depth_buffer, "close"):
+            self.depth_buffer.close()
+        if self.depth_preview is not None:
+            self.depth_preview.close()
+        if self.height_scan_buffer is not None:
+            self.height_scan_buffer.close()
 
     def cleanup(self) -> None:
         self.alive = False
@@ -718,6 +890,17 @@ def parse_args() -> RuntimeConfig:
         default=True,
         help="Enable or disable suspension bands.",
     )
+    parser.add_argument(
+        "--sensor",
+        type=Path,
+        help="Sensor yaml file used to inject simulated sensors.",
+    )
+    parser.add_argument(
+        "--depth-preview",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Show a live preview window for simulated depth cameras.",
+    )
     args = parser.parse_args()
     band_sites = tuple(site.strip() for site in args.band_sites.split(",") if site.strip())
     return RuntimeConfig(
@@ -726,6 +909,8 @@ def parse_args() -> RuntimeConfig:
         viewer=args.viewer,
         band_sites=band_sites,
         band_enabled=bool(args.band),
+        sensor=args.sensor,
+        depth_preview=bool(args.depth_preview),
     )
 
 

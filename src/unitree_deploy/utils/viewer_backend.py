@@ -6,6 +6,7 @@ from typing import Protocol
 
 import mujoco
 import mujoco.viewer
+import numpy as np
 
 from unitree_deploy.robot_model.robot_config import RobotModel
 from unitree_deploy.utils.yaml_utils import load_yaml
@@ -18,6 +19,16 @@ class ViewerBackend(Protocol):
         ...
 
     def sync(self) -> bool:
+        ...
+
+    def set_height_scan_points(
+        self,
+        points: np.ndarray,
+        valid: np.ndarray,
+        *,
+        point_size: float,
+        rgba: tuple[float, float, float, float],
+    ) -> None:
         ...
 
 
@@ -77,6 +88,11 @@ class MujocoViewerBackend:
         self.viewer = None
         self.viewer_tick = 0
         self.viewer_decim = max(1, sim_hz // render_hz)
+        self._height_scan_points = None
+        self._height_scan_valid = None
+        self._height_scan_size = 0.025
+        self._height_scan_rgba = (0.1, 0.75, 1.0, 0.9)
+        self._marker_mat = np.eye(3, dtype=np.float64).reshape(-1)
 
     def resolve_track_body_id(self) -> int | None:
         if not self.camera.track_body:
@@ -113,13 +129,58 @@ class MujocoViewerBackend:
         self.viewer_tick += 1
         if self.viewer_tick % self.viewer_decim == 0:
             self.update_tracked_lookat()
+            self.update_height_scan_markers()
             self.viewer.sync()
         return True
+
+    def set_height_scan_points(
+        self,
+        points: np.ndarray,
+        valid: np.ndarray,
+        *,
+        point_size: float,
+        rgba: tuple[float, float, float, float],
+    ) -> None:
+        self._height_scan_points = np.asarray(points, dtype=np.float64).reshape(-1, 3).copy()
+        self._height_scan_valid = np.asarray(valid, dtype=bool).reshape(-1).copy()
+        self._height_scan_size = float(point_size)
+        self._height_scan_rgba = tuple(float(value) for value in rgba)
 
     def update_tracked_lookat(self) -> None:
         if self.viewer is None or self.track_body_id is None:
             return
         self.viewer.cam.lookat[:] = self.data.xpos[self.track_body_id] + self.camera.track_offset
+
+    def update_height_scan_markers(self) -> None:
+        if self.viewer is None:
+            return
+        lock = getattr(self.viewer, "lock", None)
+        if callable(lock):
+            with lock():
+                self._write_height_scan_markers()
+        else:
+            self._write_height_scan_markers()
+
+    def _write_height_scan_markers(self) -> None:
+        scene = self.viewer.user_scn
+        if self._height_scan_points is None or self._height_scan_valid is None:
+            scene.ngeom = 0
+            return
+
+        points = self._height_scan_points[self._height_scan_valid]
+        count = min(points.shape[0], scene.maxgeom)
+        scene.ngeom = count
+        size = np.array([self._height_scan_size] * 3, dtype=np.float64)
+        rgba = np.asarray(self._height_scan_rgba, dtype=np.float32)
+        for index in range(count):
+            mujoco.mjv_initGeom(
+                scene.geoms[index],
+                mujoco.mjtGeom.mjGEOM_SPHERE,
+                size,
+                points[index],
+                self._marker_mat,
+                rgba,
+            )
 
 
 def create_viewer_backend(

@@ -9,10 +9,13 @@ from .observation import (
     PreviousActionObservation,
     ProjectedGravityObservation,
 )
+from .exteropception_observation import DepthObservation, HeightScanObservation
 
 __all__ = [
     "BaseAngularVelocityObservation",
     "CommandObservation",
+    "DepthObservation",
+    "HeightScanObservation",
     "JointPositionObservation",
     "JointVelocityObservation",
     "ObservationBase",
