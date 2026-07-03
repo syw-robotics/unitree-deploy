@@ -3,7 +3,7 @@ name = "unitree-deploy"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "mujoco>=3.6.0",
     "onnxruntime>=1.24.4",

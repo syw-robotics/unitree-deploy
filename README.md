@@ -84,13 +84,7 @@ environment.
       --record-hz 30
     ```
 
-    Run it in a separate terminal while `unitree-sim-bridge` and the controller are
-    running:
-
-    ```bash
-    unitree-sim-bridge --robot g1
-    unitree-controller --mode sim --ckpt ckpt/g1/vanilla_ppo_flat
-    ```
+    Run it in a separate terminal while the robot is running:
 
     Press `o` in the recorder process to start recording, then press `o` again to
     stop and save. Each recording is written under a timestamped subdirectory such

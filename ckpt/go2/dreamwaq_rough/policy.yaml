@@ -2,7 +2,7 @@
 # LocoLab DreamWaQ Rough Terrain Locomotion Policy
 #
 
-policy_path: "policy.onnx"
+policy_path: "policy_5000.onnx"
 
 policy_step_dt: 0.02
 physics_dt: 0.001
