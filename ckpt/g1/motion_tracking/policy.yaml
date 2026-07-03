@@ -1,0 +1,140 @@
+#
+# mjlab Unitree G1 motion-tracking policy.
+#
+
+robot: g1
+policy_path: "policy.onnx"
+policy_class: "mjlab_motion_tracking_policy:MotionTrackingPolicy"
+
+policy_step_dt: 0.02
+physics_dt: 0.001
+decimation: 20
+
+runtime_command_dim: 3
+
+policy_input_name: "obs"
+policy_output_name: "actions"
+time_input_name: "time_step"
+reference_output_names:
+  - joint_pos
+  - joint_vel
+  - body_pos_w
+  - body_quat_w
+  - body_lin_vel_w
+  - body_ang_vel_w
+
+# obs/action order matches ONNX metadata joint_names from mjlab robot.joint_names.
+obs_joint_order: [
+  "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+  "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+  "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+  "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+  "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+]
+
+sdk_joint_order: [
+  "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+  "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+  "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+  "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+  "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+]
+
+default_qpos: [
+  -0.312, 0.000, 0.000, 0.669, -0.363, 0.000,
+  -0.312, 0.000, 0.000, 0.669, -0.363, 0.000,
+  0.000, 0.000, 0.000,
+  0.200, 0.200, 0.000, 0.600, 0.000, 0.000, 0.000,
+  0.200, -0.200, 0.000, 0.600, 0.000, 0.000, 0.000,
+]
+
+obs_use_scaled_prev_action: false
+obs_prime_on_reset: true
+obs_group_concat_mode: term_major
+observation_modules:
+  - mjlab_motion_tracking_observations
+observation_types:
+  base_ang_vel: "unitree_deploy.obs.observation:BaseAngularVelocityObservation"
+  joint_pos_rel: "unitree_deploy.obs.observation:JointPositionObservation"
+  joint_vel: "unitree_deploy.obs.observation:JointVelocityObservation"
+  prev_action: "unitree_deploy.obs.observation:PreviousActionObservation"
+
+# Matches ONNX input shape [1, 160] and metadata:
+# command,motion_anchor_pos_b,motion_anchor_ori_b,base_lin_vel,base_ang_vel,joint_pos,joint_vel,actions
+observations:
+  - type: motion_command
+    history_len: 1
+  - type: motion_anchor_pos_b
+    history_len: 1
+  - type: motion_anchor_ori_b
+    history_len: 1
+    params:
+      anchor_body_index: 7
+  - type: base_lin_vel_zero
+    history_len: 1
+  - type: base_ang_vel
+    history_len: 1
+  - type: joint_pos_rel
+    history_len: 1
+  - type: joint_vel
+    history_len: 1
+  - type: prev_action
+    history_len: 1
+
+action_dim: 29
+action_clip: 10.0
+action_joint_order: [
+  "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+  "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+  "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+  "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+  "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
+]
+
+action_scale: [
+  0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
+  0.548, 0.351, 0.548, 0.351, 0.439, 0.439,
+  0.548, 0.439, 0.439,
+  0.439, 0.439, 0.439, 0.439, 0.439, 0.075, 0.075,
+  0.439, 0.439, 0.439, 0.439, 0.439, 0.075, 0.075,
+]
+
+kp_policy: [
+  40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
+  40.179, 99.098, 40.179, 99.098, 28.501, 28.501,
+  40.179, 28.501, 28.501,
+  14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
+  14.251, 14.251, 14.251, 14.251, 14.251, 16.778, 16.778,
+]
+
+kd_policy: [
+  2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
+  2.558, 6.309, 2.558, 6.309, 1.814, 1.814,
+  2.558, 1.814, 1.814,
+  0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
+  0.907, 0.907, 0.907, 0.907, 0.907, 1.068, 1.068,
+]
+
+kp_fixed_stand: [
+  100.0, 100.0, 100.0, 150.0, 40.0, 40.0,
+  100.0, 100.0, 100.0, 150.0, 40.0, 40.0,
+  200.0, 200.0, 200.0,
+  40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0,
+  40.0, 40.0, 40.0, 40.0, 40.0, 40.0, 40.0,
+]
+
+kd_fixed_stand: [
+  2.0, 2.0, 2.0, 4.0, 2.0, 2.0,
+  2.0, 2.0, 2.0, 4.0, 2.0, 2.0,
+  5.0, 5.0, 5.0,
+  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+]
+
+kd_damping: [
+  2.0, 2.0, 2.0, 4.0, 2.0, 2.0,
+  2.0, 2.0, 2.0, 4.0, 2.0, 2.0,
+  5.0, 5.0, 5.0,
+  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+]

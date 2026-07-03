@@ -2,7 +2,7 @@
 # Vanilla PPO Rough Terrain Locomotion Policy
 #
 
-policy_path: "policy.onnx"
+policy_path: "policy_10000.onnx"
 
 policy_step_dt: 0.02
 physics_dt: 0.001

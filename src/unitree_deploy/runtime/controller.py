@@ -11,8 +11,8 @@ from unitree_deploy.config.defaults import (
     DAMPING_STATE,
     DEFAULT_MODE,
     DEFAULT_NET,
-    LOWCMD_TOPIC,
-    LOWSTATE_TOPIC,
+    HG_MODE_MACHINE,
+    HG_MODE_PR,
     RUN_POLICY_STATE,
     WIRELESS_REMOTE_BUTTON_BITS,
     sim_key_for_button,
@@ -31,9 +31,8 @@ from unitree_sdk2py.core.channel import (
     ChannelPublisher,
     ChannelSubscriber,
 )
-from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
+from unitree_deploy.runtime.unitree_dds import resolve_low_level_dds
 from unitree_deploy.utils.terminal_status import ComponentConsole
 
 
@@ -110,13 +109,15 @@ class Controller:
         self.ckpt_dir = config.ckpt_dir.expanduser().resolve()
         self.policy_manager = PolicyManager.load(self.ckpt_dir, config.multi_ckpt)
         self.robot = config.robot or self.active_profile.policy.config.get("robot", DEFAULT_ROBOT)
+        self.dds = resolve_low_level_dds(self.robot)
 
-        self.lowcmd_topic = LOWCMD_TOPIC
-        self.lowstate_topic = LOWSTATE_TOPIC
+        self.lowcmd_topic = self.dds.lowcmd_topic
+        self.lowstate_topic = self.dds.lowstate_topic
         self.sdk_joint_order = list(self.active_profile.sdk_joint_order)
         self.obs_joint_order = list(self.active_profile.obs_joint_order)
         self.num_joints = len(self.sdk_joint_order)
-        self.raw_command = np.zeros(3, dtype=np.float64)
+        command_dim = int(self.active_profile.command_min.size)
+        self.raw_command = np.zeros(command_dim, dtype=np.float64)
         self.zero = np.zeros(self.num_joints, dtype=np.float64)
         self.target_sdk = np.zeros(self.num_joints, dtype=np.float32)
 
@@ -124,8 +125,8 @@ class Controller:
         self.alive = True
         self.cleanup_done = False
         self.has_low_state = False
-        self.mode_machine = 0
-        self.mode_pr = 0
+        self.mode_machine = HG_MODE_MACHINE
+        self.mode_pr = HG_MODE_PR
         self.state = DAMPING_STATE
         self.state_enter_t = time.perf_counter()
 
@@ -133,8 +134,8 @@ class Controller:
         self.dq = np.zeros(self.num_joints, dtype=np.float64)
         self.quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.gyro = np.zeros(3, dtype=np.float64)
-        self.command = np.zeros(3, dtype=np.float64)
-        self.last_policy_command = np.zeros(3, dtype=np.float64)
+        self.command = np.zeros(command_dim, dtype=np.float64)
+        self.last_policy_command = np.zeros(command_dim, dtype=np.float64)
         self.remote = RemoteCommand()
         self.log = log
 
@@ -146,11 +147,11 @@ class Controller:
         state_machine_config = load_state_machine_config(state_machine_path)
         self.state_machine_path = state_machine_path
 
-        self.low_cmd = unitree_hg_msg_dds__LowCmd_()
+        self.low_cmd = self.dds.make_lowcmd()
         self.crc = CRC()
-        self.lowstate_sub = ChannelSubscriber(self.lowstate_topic, LowState_)
+        self.lowstate_sub = ChannelSubscriber(self.lowstate_topic, self.dds.lowstate_type)
         self.lowstate_sub.Init(self.on_lowstate, 1)
-        self.lowcmd_pub = ChannelPublisher(self.lowcmd_topic, LowCmd_)
+        self.lowcmd_pub = ChannelPublisher(self.lowcmd_topic, self.dds.lowcmd_type)
         self.lowcmd_pub.Init()
 
         signal.signal(signal.SIGINT, self.close)
@@ -188,10 +189,10 @@ class Controller:
 
     # ----- DDS input and controller state snapshot -----
 
-    def on_lowstate(self, msg: LowState_) -> None:
+    def on_lowstate(self, msg) -> None:
         with self.lock:
-            self.mode_machine = int(msg.mode_machine)
-            self.mode_pr = int(msg.mode_pr)
+            self.mode_machine = int(getattr(msg, "mode_machine", HG_MODE_MACHINE))
+            self.mode_pr = int(getattr(msg, "mode_pr", HG_MODE_PR))
 
             for i in range(self.num_joints):
                 state = msg.motor_state[i]
@@ -272,9 +273,10 @@ class Controller:
     ) -> None:
         target_dq = self.zero if target_dq is None else target_dq
         tau_ff = self.zero if tau_ff is None else tau_ff
-        with self.lock:
-            self.low_cmd.mode_pr = int(self.mode_pr)
-            self.low_cmd.mode_machine = int(self.mode_machine)
+        if self.dds.has_mode_fields:
+            with self.lock:
+                self.low_cmd.mode_pr = int(self.mode_pr)
+                self.low_cmd.mode_machine = int(self.mode_machine)
 
         # Clear all motors first so any joints outside num_joints stay disabled.
         for cmd in self.low_cmd.motor_cmd:
@@ -307,6 +309,7 @@ class Controller:
     def spin(self) -> None:
         log(
             f"robot={self.robot} mode={self.config.mode} joints={self.num_joints} "
+            f"dds={self.dds.type} "
             f"topics: lowstate={self.lowstate_topic}, lowcmd={self.lowcmd_topic}"
         )
         log(

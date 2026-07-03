@@ -3,7 +3,7 @@ name = "unitree-deploy"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "mujoco>=3.6.0",
     "onnxruntime>=1.24.4",
@@ -21,6 +21,8 @@ viewer = [
 [project.scripts]
 unitree-controller = "unitree_deploy.cli.controller:main"
 unitree-plugin-template = "unitree_deploy.cli.plugin_template:main"
+unitree-trajectory-recorder = "unitree_deploy.cli.trajectory_recorder:main"
+unitree-trajectory-replay = "unitree_deploy.cli.trajectory_replay:main"
 unitree-sim-bridge = "unitree_deploy.cli.sim_bridge:main"
 unitree-visualizer = "unitree_deploy.cli.visualizer:main"
 

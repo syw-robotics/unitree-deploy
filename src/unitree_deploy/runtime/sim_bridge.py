@@ -23,8 +23,8 @@ from unitree_deploy.config.defaults import (
     BASE_QUAT,
     DEFAULT_NET,
     GYRO_SENSOR_NAMES,
-    LOWCMD_TOPIC,
-    LOWSTATE_TOPIC,
+    HG_MODE_MACHINE,
+    HG_MODE_PR,
     ODOM_TOPIC,
     RENDER_HZ,
     SIM_HZ,
@@ -44,14 +44,10 @@ from unitree_sdk2py.core.channel import (
     ChannelPublisher,
     ChannelSubscriber,
 )
-from unitree_sdk2py.idl.default import (
-    unitree_go_msg_dds__SportModeState_,
-    unitree_hg_msg_dds__LowCmd_,
-    unitree_hg_msg_dds__LowState_,
-)
+from unitree_sdk2py.idl.default import unitree_go_msg_dds__SportModeState_
 from unitree_sdk2py.idl.unitree_go.msg.dds_ import SportModeState_
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
 from unitree_sdk2py.utils.crc import CRC
+from unitree_deploy.runtime.unitree_dds import resolve_low_level_dds
 from unitree_deploy.utils.terminal_status import ComponentConsole
 from unitree_deploy.utils.viewer_backend import create_viewer_backend
 
@@ -168,8 +164,9 @@ class SimBridge:
         self.command_received = False
         self.simulation_paused = True
         self.tick = 1
-        self.mode_machine = 0
-        self.mode_pr = 0
+        self.mode_machine = HG_MODE_MACHINE
+        self.mode_pr = HG_MODE_PR
+        self.dds = resolve_low_level_dds(self.config.robot.name)
         self.keyboard = KeyboardState()
         self.lock = threading.Lock()
         self.cmd_lock = threading.Lock()
@@ -232,11 +229,11 @@ class SimBridge:
         self.band_z = float(np.mean(self.band_anchors[:, 2])) if self.band_on else 0.0
         self.band_start_z = self.band_z
 
-        self.lowstate_pub = ChannelPublisher(LOWSTATE_TOPIC, LowState_)
+        self.lowstate_pub = ChannelPublisher(self.dds.lowstate_topic, self.dds.lowstate_type)
         self.lowstate_pub.Init()
         self.odom_pub = ChannelPublisher(ODOM_TOPIC, SportModeState_)
         self.odom_pub.Init()
-        self.lowcmd_sub = ChannelSubscriber(LOWCMD_TOPIC, LowCmd_)
+        self.lowcmd_sub = ChannelSubscriber(self.dds.lowcmd_topic, self.dds.lowcmd_type)
         self.lowcmd_sub.Init(self.on_lowcmd)
 
         self.state_thread = threading.Thread(target=self.publish_state_loop, daemon=False)
@@ -363,7 +360,7 @@ class SimBridge:
 
     # ----- DDS input: LowCmd from controller.py -----
 
-    def on_lowcmd(self, msg: LowCmd_) -> None:
+    def on_lowcmd(self, msg) -> None:
         if msg is None:
             return
 
@@ -523,10 +520,11 @@ class SimBridge:
         if hasattr(msg.imu_state, "rpy"):
             msg.imu_state.rpy = quat_to_rpy(quat)
 
-    def make_lowstate(self, qpos, qvel, ctrl, gyro, acc) -> LowState_:
-        msg = unitree_hg_msg_dds__LowState_()
-        msg.mode_pr = int(self.mode_pr)
-        msg.mode_machine = int(self.mode_machine)
+    def make_lowstate(self, qpos, qvel, ctrl, gyro, acc):
+        msg = self.dds.make_lowstate()
+        if self.dds.has_mode_fields:
+            msg.mode_pr = int(self.mode_pr)
+            msg.mode_machine = int(self.mode_machine)
         msg.tick = int(self.tick)
 
         for i in range(self.num_motor):
@@ -607,7 +605,11 @@ class SimBridge:
             f"robot={self.config.robot.name} terrain={self.config.robot.terrain} "
             f"model={self.config.robot.xml_path}"
         )
-        log(f"topics: lowcmd={LOWCMD_TOPIC}, lowstate={LOWSTATE_TOPIC}, odom={ODOM_TOPIC}")
+        log(
+            f"dds={self.dds.type} "
+            f"topics: lowcmd={self.dds.lowcmd_topic}, lowstate={self.dds.lowstate_topic}, "
+            f"odom={ODOM_TOPIC}"
+        )
         log(f"sim={SIM_HZ}Hz state_pub={STATE_HZ}Hz viewer={self.config.viewer}")
         log(f"simulation starts paused; press \"space\" to continue")
         if self.band_on:

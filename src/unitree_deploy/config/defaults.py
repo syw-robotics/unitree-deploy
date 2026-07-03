@@ -18,6 +18,12 @@ BASE_QUAT = (0.0, 0.0, 0.0, 1.0)
 GYRO_SENSOR_NAMES = ("imu_ang_vel", "imu_gyro")
 ACC_SENSOR_NAMES = ("imu_lin_acc", "imu_acc")
 
+# ---------- DDS Topics ----------
+GO_ROBOTS = frozenset({"b2", "go2"})  # robots that use unitree_go_msg_dds__LowCmd_
+HG_ROBOTS = frozenset({"g1"})  # robots that use unitree_hg_msg_dds__LowCmd_
+HG_MODE_PR = 0
+HG_MODE_MACHINE = 0
+
 # ---------- Band Parameters ----------
 BAND_SITES = ("left_gantry_attach_point", "right_gantry_attach_point")
 BAND_CLEARANCE = 0.00
