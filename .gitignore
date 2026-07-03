@@ -6,6 +6,8 @@ dist/
 stubs
 
 MUJOCO_LOG.TXT
+MJDATA.TXT
+MANIFEST.in
 
 .vscode
 .codex
