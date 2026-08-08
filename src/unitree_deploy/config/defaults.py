@@ -9,6 +9,7 @@ LOWSTATE_TOPIC = "rt/lowstate"
 ODOM_TOPIC = "rt/odommodestate"
 
 SIM_HZ = 500
+LOWCMD_HZ = 500
 STATE_HZ = 200
 RENDER_HZ = 30
 

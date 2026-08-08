@@ -24,6 +24,7 @@ class CkptProfile:
     obs_to_sdk: np.ndarray
     kp_policy: np.ndarray
     kd_policy: np.ndarray
+    max_torque_sdk: np.ndarray | None
     kp_fixed_stand: np.ndarray
     kd_fixed_stand: np.ndarray
     kd_damping: np.ndarray
@@ -147,6 +148,13 @@ def build_ckpt_profile(name: str, policy_yaml_path: Path) -> CkptProfile:
     obs_to_sdk = reorder_indices(obs_joint_order, sdk_joint_order)
     kp_policy = gain_array(policy, num_joints, "kp_policy", legacy_keys=("kp", "kps_real"))
     kd_policy = gain_array(policy, num_joints, "kd_policy", legacy_keys=("kd", "kds_real"))
+    max_torque_sdk = None
+    if policy.max_torque is not None:
+        max_torque_by_joint = dict(zip(policy.action_joint_order, policy.max_torque))
+        max_torque_sdk = np.asarray(
+            [max_torque_by_joint.get(name, np.inf) for name in sdk_joint_order],
+            dtype=np.float64,
+        )
     kp_fixed_stand = gain_array(policy, num_joints, "kp_fixed_stand", fallback=kp_policy)
     kd_fixed_stand = gain_array(policy, num_joints, "kd_fixed_stand", fallback=kd_policy)
     kd_damping = gain_array(
@@ -169,6 +177,7 @@ def build_ckpt_profile(name: str, policy_yaml_path: Path) -> CkptProfile:
         obs_to_sdk=obs_to_sdk,
         kp_policy=kp_policy,
         kd_policy=kd_policy,
+        max_torque_sdk=max_torque_sdk,
         kp_fixed_stand=kp_fixed_stand,
         kd_fixed_stand=kd_fixed_stand,
         kd_damping=kd_damping,

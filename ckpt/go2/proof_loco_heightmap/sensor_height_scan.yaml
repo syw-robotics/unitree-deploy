@@ -1,0 +1,41 @@
+# MuJoCo ray-cast heightmap matching the Isaac Lab training grid.
+
+height_scan:
+  type: height_scan
+  source: mujoco_raycast
+  name: proof_loco_heightmap
+  attach_body: base_link
+  shared_memory_name: unitree_height_scan_go2_proof_loco_heightmap
+
+  # Training updates the ray caster once per 50 Hz policy step.
+  update_rate: 50.0
+
+  # Isaac Lab GridPatternCfg(resolution=0.1, size=[1.7, 0.8]) produces
+  # 18 x samples and 9 y samples. The policy adapter transposes the producer's
+  # x-major buffer to Isaac Lab's default xy flattening order.
+  grid:
+    # Training sensor offset.x=0.6 plus pattern x=[-0.85, 0.85].
+    x_range: [-0.25, 1.45]
+    y_range: [-0.4, 0.4]
+    shape: [18, 9]
+
+  ray:
+    start_z: 1.0
+    max_distance: 3.0
+    direction: [0.0, 0.0, -1.0]
+    align_to_body_yaw: true
+    static_only: true
+    geom_groups: [0]
+
+  # The local producer emits terrain_z - base_z. heightmap_policy.py converts
+  # this to the Isaac Lab observation: base_z - terrain_z - 0.25.
+  preprocessing:
+    mode: base_relative_height
+    # Keep raw values broad; the policy adapter clips after sign/offset conversion.
+    clip_range: [-100.0, 100.0]
+    fill_miss: 10.0
+
+  visualization:
+    enabled: true
+    point_size: 0.02
+    rgba: [0.1, 0.75, 1.0, 0.75]

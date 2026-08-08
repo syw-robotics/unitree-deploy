@@ -11,6 +11,7 @@ from unitree_deploy.config.defaults import (
     DAMPING_STATE,
     DEFAULT_MODE,
     DEFAULT_NET,
+    LOWCMD_HZ,
     LOWCMD_TOPIC,
     LOWSTATE_TOPIC,
     RUN_POLICY_STATE,
@@ -20,6 +21,7 @@ from unitree_deploy.config.defaults import (
 from unitree_deploy.obs.observation import ObservationContext
 from unitree_deploy.robot_model.robot_config import DEFAULT_ROBOT
 from unitree_deploy.runtime.multi_ckpt import PolicyManager, resolve_policy_yaml
+from unitree_deploy.runtime.lowlevel_pd import clip_target_q_by_pd_torque
 from unitree_deploy.runtime.controller_state_machine import (
     ControllerStateMachine,
     load_state_machine_config,
@@ -120,6 +122,16 @@ class Controller:
         self.raw_command = np.zeros(command_dim, dtype=np.float64)
         self.zero = np.zeros(self.num_joints, dtype=np.float64)
         self.target_sdk = np.zeros(self.num_joints, dtype=np.float32)
+        self.command_target_q = np.zeros(self.num_joints, dtype=np.float64)
+        self.command_target_dq = np.zeros(self.num_joints, dtype=np.float64)
+        self.command_tau_ff = np.zeros(self.num_joints, dtype=np.float64)
+        self.command_kp = np.zeros(self.num_joints, dtype=np.float64)
+        self.command_kd = np.zeros(self.num_joints, dtype=np.float64)
+        self.command_max_torque = np.full(self.num_joints, np.inf, dtype=np.float64)
+        self.command_enable = False
+        self.command_torque_clip = False
+        self.safe_target_q = np.zeros(self.num_joints, dtype=np.float64)
+        self.lowcmd_thread: threading.Thread | None = None
 
         self.lock = threading.Lock()
         self.alive = True
@@ -270,12 +282,45 @@ class Controller:
         enable: bool = True,
         target_dq: np.ndarray | None = None,
         tau_ff: np.ndarray | None = None,
+        max_torque: np.ndarray | None = None,
     ) -> None:
         target_dq = self.zero if target_dq is None else target_dq
         tau_ff = self.zero if tau_ff is None else tau_ff
         with self.lock:
+            self.command_target_q[:] = target_q
+            self.command_target_dq[:] = target_dq
+            self.command_tau_ff[:] = tau_ff
+            self.command_kp[:] = kp
+            self.command_kd[:] = kd
+            self.command_enable = bool(enable)
+            self.command_torque_clip = max_torque is not None
+            if max_torque is not None:
+                self.command_max_torque[:] = max_torque
+
+    def publish_joint_cmd(self) -> None:
+        """Build and publish one LowCmd using the latest low-level state snapshot."""
+        with self.lock:
             self.low_cmd.mode_pr = int(self.mode_pr)
             self.low_cmd.mode_machine = int(self.mode_machine)
+            self.safe_target_q[:] = self.command_target_q
+            if self.command_torque_clip:
+                clip_target_q_by_pd_torque(
+                    self.command_target_q,
+                    self.q,
+                    self.dq,
+                    self.command_kp,
+                    self.command_kd,
+                    self.command_max_torque,
+                    self.command_target_dq,
+                    self.command_tau_ff,
+                    out=self.safe_target_q,
+                )
+            target_q = self.safe_target_q.copy()
+            target_dq = self.command_target_dq.copy()
+            tau_ff = self.command_tau_ff.copy()
+            kp = self.command_kp.copy()
+            kd = self.command_kd.copy()
+            enable = self.command_enable
 
         # Clear all motors first so any joints outside num_joints stay disabled.
         for cmd in self.low_cmd.motor_cmd:
@@ -293,6 +338,12 @@ class Controller:
 
         self.low_cmd.crc = self.crc.Crc(self.low_cmd)
         self.lowcmd_pub.Write(self.low_cmd)
+
+    def lowcmd_loop(self) -> None:
+        timer = LoopTimer(1.0 / LOWCMD_HZ)
+        while self.alive:
+            self.publish_joint_cmd()
+            timer.sleep()
 
     # ----- State dispatch -----
 
@@ -313,6 +364,11 @@ class Controller:
         log(
             f"policy={self.active_profile_name} "
             f"available={','.join(self.policy_manager.profiles)}"
+        )
+        log(
+            "target-position torque clip="
+            f"{'on' if self.active_profile.policy.torque_clip_enabled_for_mode(self.config.mode) else 'off'} "
+            f"in {LOWCMD_HZ} Hz LowCmd loop for mode={self.config.mode}"
         )
         log(f"state_machine={self.state_machine_path or 'default'}")
         if self.config.mode == "sim":
@@ -335,6 +391,9 @@ class Controller:
             control_hint += f", {self.policy_manager.switch.button}: switch policy"
         log(control_hint)
         log("waiting for lowstate...")
+
+        self.lowcmd_thread = threading.Thread(target=self.lowcmd_loop, daemon=False)
+        self.lowcmd_thread.start()
 
         timer = LoopTimer(float(self.active_profile.policy.policy_step_dt))
         last_log = time.perf_counter()
@@ -368,6 +427,8 @@ class Controller:
             return
         self.cleanup_done = True
         self.alive = False
+        if self.lowcmd_thread is not None and self.lowcmd_thread is not threading.current_thread():
+            self.lowcmd_thread.join(timeout=1.0)
         console.stop()
         self.lowstate_sub.Close()
         self.lowcmd_pub.Close()

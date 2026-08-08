@@ -1,0 +1,59 @@
+<mujoco model="parkour_terrain">
+  <include file="materials.xml"/>
+
+  <worldbody>
+    <!-- <light name="key_light" directional="true" diffuse="0.9 0.9 0.9" specular="0.05 0.05 0.05" pos="2 3 4" dir="-0.4 -0.6 -1" castshadow="false" cutoff="255"/> -->
+    <light name="fill_light" directional="true" diffuse="0.6 0.6 0.6" specular="0.02 0.02 0.02" pos="-2 3 3" dir="0.5 -0.5 -1" castshadow="false" cutoff="255"/>
+    <light name="rim_light" directional="true" diffuse="0.35 0.35 0.35" specular="0.01 0.01 0.01" pos="0 -4 3" dir="0 0.7 -1" castshadow="false" cutoff="255"/>
+    <light name="ambient_fill" directional="false" diffuse="0.4 0.4 0.4" specular="0 0 0" pos="0 0 3" castshadow="false" cutoff="255"/>
+    <geom name="floor" size="0 0 0.05" friction="0.75 .1 .1" type="plane" material="groundplane"/>
+
+    <!-- [> 0.60 m high platform, followed by a short landing section back at ground height. <] -->
+    <!-- <geom name="platform_50cm" type="box" size="0.55 1.20 0.30" pos="-3 0 0.30" friction="0.9 .1 .1" material="rough_obstacles"/> -->
+    <!--  -->
+    <!-- [> Stair up then down: 0.30 m tread length, 0.16 m height increments. <] -->
+    <!-- <geom name="stair_up_01" type="box" size="0.15 1.20 0.08" pos="2.65 0 0.08" friction="0.9 .1 .1" material="rough_obstacles"/> -->
+    <!-- <geom name="stair_up_02" type="box" size="0.15 1.20 0.16" pos="2.95 0 0.16" friction="0.9 .1 .1" material="rough_obstacles"/> -->
+    <!-- <geom name="stair_up_03" type="box" size="0.15 1.20 0.24" pos="3.25 0 0.24" friction="0.9 .1 .1" material="rough_obstacles"/> -->
+    <!-- <geom name="stair_top" type="box" size="0.15 1.20 0.24" pos="3.55 0 0.24" friction="0.9 .1 .1" material="rough_obstacles"/> -->
+    <!-- <geom name="stair_down_01" type="box" size="0.15 1.20 0.16" pos="3.85 0 0.16" friction="0.9 .1 .1" material="rough_obstacles"/> -->
+    <!-- <geom name="stair_down_02" type="box" size="0.15 1.20 0.08" pos="4.15 0 0.08" friction="0.9 .1 .1" material="rough_obstacles"/> -->
+    <!--  -->
+    <!--  -->
+    <!--  -->
+    <!-- [> 0.60 m gap: run-up ends at x=10.20 and landing starts at x=10.80. <] -->
+    <!-- <geom name="gap_runup" type="box" size="1.20 1.20 0.15" pos="9.0 0 0.15" friction="0.9 .1 .1" material="rough_obstacles"/> -->
+    <!-- <geom name="gap_landing" type="box" size="1.20 1.20 0.15" pos="12.0 0 0.15" friction="0.9 .1 .1" material="rough_obstacles"/> -->
+    <!--  -->
+    <!-- [> 0.70 m gap: run-up ends at x=10.20 and landing starts at x=10.80. <] -->
+    <!-- <geom name="gap_landing_2" type="box" size="1.20 1.20 0.2" pos="15.1 0 0.2" friction="0.85 .1 .1" material="rough_obstacles"/> -->
+
+    <geom name="Platform_2_copy" type="box" size="1 1 0.2" pos="4.6 0 0.2" rgba="0.568627 0.72549 0.698039 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_3" type="box" size="1 1 0.225" pos="8.85 0 0.225" rgba="0.705882 0.658824 0.811765 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2" type="box" size="0.1455 1 0.075" pos="1.7 3 0.075" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_step_02" type="box" size="0.1455 1 0.15" pos="2 3 0.15" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_step_03" type="box" size="0.1455 1 0.225" pos="2.3 3 0.225" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_step_04" type="box" size="0.1455 1 0.3" pos="2.6 3 0.3" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_step_05" type="box" size="0.1455 1 0.375" pos="2.9 3 0.375" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_step_06" type="box" size="0.1455 1 0.45" pos="3.2 3 0.45" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_step_07" type="box" size="0.1455 1 0.525" pos="3.5 3 0.525" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_step_08" type="box" size="0.1455 1 0.6" pos="3.8 3 0.6" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_copy" type="box" size="0.1455 1 0.075" pos="8.2 3 0.075" quat="0 0 0 -1" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_copy_step_02" type="box" size="0.1455 1 0.15" pos="7.9 3 0.15" quat="0 0 0 -1" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_copy_step_03" type="box" size="0.1455 1 0.225" pos="7.6 3 0.225" quat="0 0 0 -1" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_copy_step_04" type="box" size="0.1455 1 0.3" pos="7.3 3 0.3" quat="0 0 0 -1" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_copy_step_05" type="box" size="0.1455 1 0.375" pos="7 3 0.375" quat="0 0 0 -1" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_copy_step_06" type="box" size="0.1455 1 0.45" pos="6.7 3 0.45" quat="0 0 0 -1" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_copy_step_07" type="box" size="0.1455 1 0.525" pos="6.4 3 0.525" quat="0 0 0 -1" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Stairs_2_copy_step_08" type="box" size="0.1455 1 0.6" pos="6.1 3 0.6" quat="0 0 0 -1" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_3_copy" type="box" size="1 1 0.675" pos="4.95 3 0.675" rgba="0.784314 0.827451 0.796078 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_2_copy_2" type="box" size="0.15 0.5 0.125" pos="1.75 0.05 0.125" rgba="0.843137 0.717647 0.541176 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_3_copy_2_copy" type="box" size="1 1 0.25" pos="13.35 0 0.25" rgba="0.843137 0.717647 0.541176 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_3_copy_2_copy_copy" type="box" size="1 1 0.275" pos="17.6 0 0.275" rgba="0.705882 0.658824 0.811765 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_3_copy_2_copy_copy_copy" type="box" size="1 1 0.275" pos="21.4 0 0.275" rgba="0.568627 0.72549 0.698039 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_2_copy_copy" type="box" size="1 1 0.25" pos="3 -4 0.25" rgba="0.568627 0.72549 0.698039 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_2_copy_copy_copy" type="box" size="1 1 0.25" pos="5.5 -4 0.25" rgba="0.568627 0.72549 0.698039 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_2_copy_copy_copy_copy" type="box" size="1 1 0.25" pos="8.2 -4 0.25" rgba="0.568627 0.72549 0.698039 1" friction="1 0.005 0.0001" condim="3"/>
+    <geom name="Platform_2_copy_copy_copy_copy_copy" type="box" size="1 1 0.25" pos="10.8 -4 0.25" rgba="0.568627 0.72549 0.698039 1" friction="1 0.005 0.0001" condim="3"/>
+    </worldbody>
+</mujoco>

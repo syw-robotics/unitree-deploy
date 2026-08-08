@@ -7,6 +7,8 @@
     <light name="rim_light" directional="true" diffuse="0.35 0.35 0.35" specular="0.01 0.01 0.01" pos="0 -4 3" dir="0 0.7 -1" castshadow="false" cutoff="255"/>
     <light name="ambient_fill" directional="false" diffuse="0.4 0.4 0.4" specular="0 0 0" pos="0 0 3" castshadow="false" cutoff="255"/>
     <geom name="floor" size="0 0 0.05" friction="0.75 .1 .1" type="plane" material="groundplane"/>
+
+
     <geom name="rough_block_01" type="box" size="0.22 0.45 0.035" pos="1.0 -0.45 0.035" friction="0.9 .1 .1" material="rough_obstacles"/>
     <geom name="rough_block_02" type="box" size="0.18 0.34 0.055" pos="1.4 0.32 0.055" friction="0.9 .1 .1" material="rough_obstacles"/>
     <geom name="rough_block_03" type="box" size="0.26 0.30 0.045" pos="1.9 -0.15 0.045" friction="0.9 .1 .1" material="rough_obstacles"/>

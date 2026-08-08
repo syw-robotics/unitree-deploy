@@ -1,0 +1,153 @@
+#
+# Go2 Perceptive Locomotion Policy with Depth Vision
+#
+
+policy_path: "manual_gate_v2-no-hardgate/actor_policy_gate.onnx"
+policy_class: "depth_policy:DepthRecurrentPolicy"
+depth_encoder_path: "manual_gate_v2-no-hardgate/depth_encoder.onnx"
+depth_encoder_input_name: "depth_image"
+depth_encoder_output_name: "depth_image_latent"
+
+gate_control:
+  # policy: actor runs log-variance/gate networks and owns the smoothed gate.
+  # manual: use manual_path; log-variance/gate networks are absent from that ONNX.
+  mode: policy
+  # mode: manual
+  policy_path: "manual_gate_v2-no-hardgate/actor_policy_gate.onnx"
+  manual_path: "manual_gate_v2-no-hardgate/actor_manual_gate.onnx"
+  value: 1.0
+
+gate_plot:
+  # enabled: true
+  enabled: false
+  backend: TkAgg
+  history: 500
+  update_interval: 5
+
+policy_step_dt: 0.02
+physics_dt: 0.001
+decimation: 20
+
+obs_joint_order: [
+  'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
+  'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
+  'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
+  'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
+]
+
+sdk_joint_order: [
+  'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
+  'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
+  'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
+  'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
+]
+
+default_qpos: [
+  -0.1, 0.8, -1.5,
+  0.1, 0.8, -1.5,
+  -0.1, 1.0, -1.5,
+  0.1, 1.0, -1.5,
+]
+
+policy_input_name: "obs"
+policy_output_name: "actions"
+
+obs_use_scaled_prev_action: false
+obs_prime_on_reset: true
+obs_group_concat_mode: term_major
+
+observation_types:
+  base_ang_vel: "unitree_deploy.obs.observation:BaseAngularVelocityObservation"
+  projected_gravity: "unitree_deploy.obs.observation:ProjectedGravityObservation"
+  command: "unitree_deploy.obs.observation:CommandObservation"
+  joint_pos_rel: "unitree_deploy.obs.observation:JointPositionObservation"
+  joint_vel: "unitree_deploy.obs.observation:JointVelocityObservation"
+  prev_action: "unitree_deploy.obs.observation:PreviousActionObservation"
+  depth: "unitree_deploy.obs.exteropception_observation:DepthObservation"
+  height_scan: "unitree_deploy.obs.exteropception_observation:HeightScanObservation"
+
+observations:
+  - type: base_ang_vel
+    history_len: 10
+    scale: 0.25
+  - type: projected_gravity
+    history_len: 10
+  - type: command
+    history_len: 10
+    command_range:
+      - [0.0, 0.8]
+      - [-0.5, 0.5]
+      - [-1.5, 1.5]
+  - type: joint_pos_rel
+    history_len: 10
+  - type: joint_vel
+    history_len: 10
+    scale: 0.05
+  - type: prev_action
+    history_len: 10
+    clip: [-10.0, 10.0]
+  - type: depth
+    history_len: 2
+    params:
+      height: 23
+      width: 44
+      shared_memory_name: unitree_depth_go2_perceptive_locomotion
+
+action_dim: 12
+raw_action_clip: null
+target_q_clip: [-100.0, 100.0]
+# max_torque: 27.0
+max_torque: 30.0
+# MuJoCo already saturates actuator torque at every 500 Hz physics step.
+# On real hardware, enforce this in the independent 500 Hz LowCmd/PD loop,
+# using the latest q/dq while the 50 Hz policy target is held.
+max_torque_target_clip_modes: [real]
+
+action_joint_order: [
+  'FR_hip_joint', 'FR_thigh_joint', 'FR_calf_joint',
+  'FL_hip_joint', 'FL_thigh_joint', 'FL_calf_joint',
+  'RR_hip_joint', 'RR_thigh_joint', 'RR_calf_joint',
+  'RL_hip_joint', 'RL_thigh_joint', 'RL_calf_joint',
+]
+
+action_scale: [
+  0.125, 0.25, 0.25,
+  0.125, 0.25, 0.25,
+  0.125, 0.25, 0.25,
+  0.125, 0.25, 0.25,
+]
+
+kp_policy: [
+  25.0, 25.0, 25.0,
+  25.0, 25.0, 25.0,
+  25.0, 25.0, 25.0,
+  25.0, 25.0, 25.0,
+]
+
+kd_policy: [
+  0.5, 0.5, 0.5,
+  0.5, 0.5, 0.5,
+  0.5, 0.5, 0.5,
+  0.5, 0.5, 0.5,
+]
+
+kp_fixed_stand: [
+  50.0, 50.0, 50.0,
+  50.0, 50.0, 50.0,
+  50.0, 50.0, 50.0,
+  50.0, 50.0, 50.0,
+]
+
+kd_fixed_stand: [
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+]
+
+kd_damping: [
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+  1.0, 1.0, 1.0,
+]

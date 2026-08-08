@@ -1,0 +1,45 @@
+#
+# Depth camera sensor configuration
+#
+
+camera:
+  type: depth
+  source: mujoco
+  name: depth_camera
+  attach_body: base_link
+  shared_memory_name: unitree_depth_go2_perceptive_locomotion
+
+  # Update rate (Hz)
+  update_rate: 10.0
+
+  # Camera pose relative to base_link. This is the MuJoCo/OpenGL equivalent of
+  # the training Isaac config rot=quat_from_euler_xyz_tuple([180, 60, -90]), convention="ros".
+  transform:
+    position: [0.335, 0.015, 0.088]
+    rpy: [60.0, 0.0, -90.0]
+    degrees: true
+
+  # Camera intrinsics
+  intrinsics:
+    width: 48
+    height: 27
+    fovx: 87.0
+    fovy: 58.0
+    # Render at 2x resolution, then sample the independent Isaac fovx/fovy rays.
+    render_scale: 2
+    near: 0.1
+    far: 2.0
+
+  # Depth preprocessing
+  preprocessing:
+    crop:
+      top: 2
+      bottom: 2
+      left: 2
+      right: 2
+    gaussian_blur:
+      kernel_size: 3
+      sigma: 1.0
+    clip_range: [0.1, 2.0]
+    normalize_mode: "clip_scale"  # (value - clip_min) / (clip_max - clip_min)
+    fill_invalid: 2.0

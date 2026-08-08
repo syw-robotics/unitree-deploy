@@ -165,7 +165,7 @@ In simulation, the mapped keys are `enter` for `A`, `\` for `Start`, `b` for
 
 ## ✅ TODO
 
-- [ ] Max torque clipping.
+- [x] Low-level target-position torque clipping in the 500 Hz LowCmd loop.
 - [ ] G1 motion tracking policy support.
 - [ ] VR teleoperation device port.
 - [ ] Check viser usability for odometry and RealSense hardware deployment.

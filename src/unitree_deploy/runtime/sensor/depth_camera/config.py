@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -54,7 +55,11 @@ def _format_float_list(values, *, length: int, field: str) -> str:
     return " ".join(f"{float(value):.10g}" for value in values)
 
 
-def _quat_wxyz_from_rpy(transform: dict) -> str:
+def _quat_wxyz_from_transform(transform: dict) -> str:
+    quat = transform.get("quat")
+    if quat is not None:
+        return _format_float_list(quat, length=4, field="transform.quat")
+
     rpy = transform.get("rpy", [0.0, 0.0, 0.0])
     if not isinstance(rpy, (list, tuple)) or len(rpy) != 3:
         raise ValueError("camera.transform.rpy must contain 3 values")
@@ -78,6 +83,20 @@ def _remove_camera_by_name(root: ET.Element, camera_name: str) -> None:
                 parent.remove(child)
 
 
+def _resolve_compiler_directories(root: ET.Element, model_directory: Path) -> None:
+    compiler = root.find("compiler")
+    if compiler is None:
+        return
+
+    for attribute in ("assetdir", "meshdir", "texturedir"):
+        value = compiler.get(attribute)
+        if value is None:
+            continue
+        directory = Path(value)
+        if not directory.is_absolute():
+            compiler.set(attribute, str((model_directory / directory).resolve()))
+
+
 def write_model_xml_with_sensor_camera(
     model_xml_path: Path,
     sensor_yaml_path: Path,
@@ -97,7 +116,7 @@ def write_model_xml_with_sensor_camera(
         length=3,
         field="transform.position",
     )
-    quat = _quat_wxyz_from_rpy(transform)
+    quat = _quat_wxyz_from_transform(transform)
     fovy = float(intrinsics["fovy"])
 
     model_xml_path = model_xml_path.resolve()
@@ -111,6 +130,7 @@ def write_model_xml_with_sensor_camera(
     output_path = output_dir / f"{model_xml_path.stem}_sensor_camera_{digest}.xml"
 
     root = ET.parse(model_xml_path).getroot()
+    _resolve_compiler_directories(root, model_xml_path.parent)
     _remove_camera_by_name(root, camera_name)
 
     if attach_body.lower() in ("world", "worldbody"):

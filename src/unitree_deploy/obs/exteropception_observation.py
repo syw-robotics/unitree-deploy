@@ -46,7 +46,12 @@ class _SharedArrayObservation(ObservationBase):
 
 
 class DepthObservation(_SharedArrayObservation):
-    """Depth image observation updated asynchronously by a camera producer."""
+    """Depth image observation updated asynchronously by a camera producer.
+
+    The controller runs faster than the camera. Only advance the depth history
+    when a new camera frame appears, so history_len=2 means adjacent camera
+    frames instead of adjacent policy steps.
+    """
 
     def __init__(
         self,
@@ -64,6 +69,14 @@ class DepthObservation(_SharedArrayObservation):
             sensor_buffer=depth_buffer,
             shared_memory_name=shared_memory_name,
         )
+
+    def update(self, context: ObservationContext) -> None:
+        current = self._compute_processed_current_obs(context)
+        if self.history_len > 1 and np.array_equal(current, self.buffer[-1]):
+            return
+        if self.history_len > 1:
+            self.buffer[:-1] = self.buffer[1:]
+        self.buffer[-1] = current
 
 
 class HeightScanObservation(_SharedArrayObservation):

@@ -323,12 +323,15 @@ class SimBridge:
             height=intrinsics["height"],
             width=intrinsics["width"],
             fov=intrinsics["fovy"],
+            fovx=intrinsics.get("fovx"),
+            render_scale=intrinsics.get("render_scale", 1),
             near=intrinsics["near"],
             far=intrinsics["far"],
             clip_range=tuple(preprocessing["clip_range"]),
             normalize_mode=preprocessing["normalize_mode"],
             fill_invalid=preprocessing["fill_invalid"],
             crop=crop,
+            gaussian_blur=preprocessing.get("gaussian_blur"),
         )
         if self.config.depth_preview:
             preview_config = camera_config.get("preview", {})

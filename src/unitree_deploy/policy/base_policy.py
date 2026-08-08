@@ -92,7 +92,11 @@ class BasePolicy:
         self.decimation = int(self.config["decimation"])
 
         self.action_dim = int(self.config["action_dim"])
-        self.action_clip = self._parse_action_clip(self.config.get("action_clip"))
+        raw_action_clip_cfg = self.config.get("raw_action_clip", self.config.get("action_clip"))
+        self.raw_action_clip = self._parse_optional_symmetric_limit(raw_action_clip_cfg, "raw_action_clip")
+        # Backward-compatible attribute for external policy plugins.
+        self.action_clip = self.raw_action_clip
+        self.target_q_clip = self._parse_optional_range(self.config.get("target_q_clip"), "target_q_clip")
         if self.action_dim != len(self.action_joint_order):
             raise ValueError(
                 f"action_dim={self.action_dim} does not match action_joint_order "
@@ -121,17 +125,78 @@ class BasePolicy:
             [action_scaling_cfg[name] for name in self.action_joint_order],
             dtype=np.float32,
         )
+        self.max_torque = self._parse_action_joint_values(self.config.get("max_torque"), "max_torque")
+        if self.max_torque is not None:
+            if np.any(self.max_torque <= 0.0):
+                raise ValueError("max_torque must be positive when enabled")
+        target_clip_modes_cfg = self.config.get("max_torque_target_clip_modes")
+        if target_clip_modes_cfg is None:
+            self.max_torque_target_clip_modes = None
+        else:
+            if isinstance(target_clip_modes_cfg, str):
+                target_clip_modes_cfg = [target_clip_modes_cfg]
+            if not isinstance(target_clip_modes_cfg, list):
+                raise TypeError("max_torque_target_clip_modes must be a list of runtime modes")
+            self.max_torque_target_clip_modes = {str(mode).lower() for mode in target_clip_modes_cfg}
+            unknown_modes = self.max_torque_target_clip_modes.difference({"sim", "real"})
+            if unknown_modes:
+                raise ValueError(
+                    "max_torque_target_clip_modes contains unknown modes: "
+                    f"{sorted(unknown_modes)}"
+                )
         self.obs_use_scaled_prev_action = bool(self.config.get("obs_use_scaled_prev_action", True))
         self.action = np.zeros(len(self.action_joint_order), dtype=np.float32)
         self.target_q = self.default_joint_pos.copy()
 
+    def torque_clip_enabled_for_mode(self, mode: str) -> bool:
+        """Return whether the low-level PD loop should enforce ``max_torque``."""
+        normalized_mode = str(mode).lower()
+        if normalized_mode not in ("sim", "real"):
+            raise ValueError(f"unknown runtime mode: {mode!r}")
+        return self.max_torque is not None and (
+            self.max_torque_target_clip_modes is None
+            or normalized_mode in self.max_torque_target_clip_modes
+        )
+
     @staticmethod
-    def _parse_action_clip(value) -> float | None:
+    def _parse_optional_symmetric_limit(value, field: str) -> float | None:
         if value is None:
             return None
         if isinstance(value, str) and value.strip().lower() in ("none", "null"):
             return None
-        return float(value)
+        parsed = float(value)
+        if parsed < 0.0:
+            raise ValueError(f"{field} must be non-negative")
+        return parsed
+
+    @staticmethod
+    def _parse_optional_range(value, field: str) -> tuple[float, float] | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip().lower() in ("none", "null"):
+            return None
+        parsed = np.asarray(value, dtype=np.float32).reshape(-1)
+        if parsed.size != 2 or parsed[0] > parsed[1]:
+            raise ValueError(f"{field} must contain [min, max], got {value!r}")
+        return float(parsed[0]), float(parsed[1])
+
+    def _parse_action_joint_values(self, value, field: str) -> np.ndarray | None:
+        if value is None:
+            return None
+        if isinstance(value, str) and value.strip().lower() in ("none", "null"):
+            return None
+        parsed = np.asarray(value, dtype=np.float32).reshape(-1)
+        if parsed.size == 1:
+            return np.full(self.action_dim, float(parsed[0]), dtype=np.float32)
+        if parsed.size == len(self.sdk_joint_order):
+            by_name = {name: parsed[i] for i, name in enumerate(self.sdk_joint_order)}
+            return np.asarray([by_name[name] for name in self.action_joint_order], dtype=np.float32)
+        if parsed.size == self.action_dim:
+            return parsed.astype(np.float32, copy=True)
+        raise ValueError(
+            f"{field} has {parsed.size} values; expected 1, {self.action_dim}, "
+            f"or {len(self.sdk_joint_order)}"
+        )
 
     # ----- ONNX input/output names -----
 
@@ -226,6 +291,28 @@ class BasePolicy:
         self.observation.reset()
         self._observation_needs_prime = self.obs_prime_on_reset
 
+    def _target_q_from_policy_action(self, policy_action, context: ObservationContext) -> np.ndarray:
+        """Convert a raw policy action into a safe absolute joint-position target."""
+        action = np.asarray(policy_action, dtype=np.float32).reshape(-1)
+        if action.size != self.action_dim:
+            raise ValueError(f"policy produced {action.size} actions, expected {self.action_dim}")
+        self.action[:] = action
+
+        # Training observes the raw action, before action/target safety processing.
+        prev_action = self.action * self.action_scaling if self.obs_use_scaled_prev_action else self.action
+        self.previous_action_observation.record_action(prev_action)
+
+        if self.raw_action_clip is not None:
+            np.clip(self.action, -self.raw_action_clip, self.raw_action_clip, out=self.action)
+
+        action_target_q = self.default_joint_pos_action + self.action_scaling * self.action
+        if self.target_q_clip is not None:
+            np.clip(action_target_q, self.target_q_clip[0], self.target_q_clip[1], out=action_target_q)
+
+        self.target_q[:] = self.default_joint_pos
+        self.target_q[self.action_to_obs_indices] = action_target_q
+        return self.target_q
+
     def compute_target_q(self, context: ObservationContext) -> np.ndarray:
         if self._observation_needs_prime:
             self.observation.prime(context)
@@ -237,20 +324,7 @@ class BasePolicy:
             [self.action_output_name],
             {self.input_name: obs_vector[None, :]},
         )
-        policy_action = np.asarray(outputs[0], dtype=np.float32).reshape(-1)
-        self.action[:] = policy_action
-        prev_action = self.action * self.action_scaling if self.obs_use_scaled_prev_action else self.action
-        self.previous_action_observation.record_action(prev_action)
-        if self.action_clip is not None:
-            np.clip(self.action, -self.action_clip, self.action_clip, out=self.action)
-
-        # Return full robot targets in obs_joint_order; the controller converts to sdk_joint_order.
-        self.target_q[:] = self.default_joint_pos
-        self.target_q[self.action_to_obs_indices] = (
-            self.default_joint_pos_action
-            + self.action_scaling * self.action
-        )
-        return self.target_q
+        return self._target_q_from_policy_action(outputs[0], context)
 
 
 

@@ -173,6 +173,11 @@ class PolicyState(ControllerState):
             controller.reorder_policy_to_sdk(policy_action),
             profile.kp_policy,
             profile.kd_policy,
+            max_torque=(
+                profile.max_torque_sdk
+                if profile.policy.torque_clip_enabled_for_mode(controller.config.mode)
+                else None
+            ),
         )
         return None
 
