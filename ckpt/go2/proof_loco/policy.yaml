@@ -91,6 +91,7 @@ observations:
     params:
       height: 23
       width: 44
+      history_skip_frames: 2
       shared_memory_name: unitree_depth_go2_perceptive_locomotion
 
 action_dim: 12

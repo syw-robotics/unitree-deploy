@@ -26,14 +26,17 @@ class _SharedArrayObservation(ObservationBase):
         if self.sensor_buffer is not None or not self.shared_memory_name:
             return
         try:
-            from unitree_deploy.runtime.sensor.array_buffer import SharedArrayObservationBuffer
-
-            self.sensor_buffer = SharedArrayObservationBuffer.open(
-                name=self.shared_memory_name,
-                shape=(self.height, self.width),
-            )
+            self.sensor_buffer = self._open_shared_buffer()
         except FileNotFoundError:
             return
+
+    def _open_shared_buffer(self):
+        from unitree_deploy.runtime.sensor.array_buffer import SharedArrayObservationBuffer
+
+        return SharedArrayObservationBuffer.open(
+            name=self.shared_memory_name,
+            shape=(self.height, self.width),
+        )
 
     def compute(self, context: ObservationContext) -> np.ndarray:
         del context
@@ -48,9 +51,9 @@ class _SharedArrayObservation(ObservationBase):
 class DepthObservation(_SharedArrayObservation):
     """Depth image observation updated asynchronously by a camera producer.
 
-    The controller runs faster than the camera. Only advance the depth history
-    when a new camera frame appears, so history_len=2 means adjacent camera
-    frames instead of adjacent policy steps.
+    The controller runs faster than the camera. Frame sequences, rather than
+    pixel equality, determine when the depth history advances. This preserves
+    sensor timing even when consecutive images happen to be identical.
     """
 
     def __init__(
@@ -61,7 +64,12 @@ class DepthObservation(_SharedArrayObservation):
         width: int,
         depth_buffer=None,
         shared_memory_name: str | None = None,
+        history_skip_frames: int = 1,
     ) -> None:
+        self.history_skip_frames = int(history_skip_frames)
+        if self.history_skip_frames < 1:
+            raise ValueError("history_skip_frames must be at least 1")
+        self._last_sensor_sequence: int | None = None
         super().__init__(
             history_len=history_len,
             height=height,
@@ -70,9 +78,55 @@ class DepthObservation(_SharedArrayObservation):
             shared_memory_name=shared_memory_name,
         )
 
+    def _open_shared_buffer(self):
+        from unitree_deploy.runtime.sensor.depth_camera.depth_buffer import (
+            SharedDepthObservationBuffer,
+        )
+
+        return SharedDepthObservationBuffer.open(
+            name=self.shared_memory_name,
+            height=self.height,
+            width=self.width,
+        )
+
+    def _current_with_sequence(
+        self,
+        context: ObservationContext,
+    ) -> tuple[np.ndarray, int | None]:
+        del context
+        self._ensure_buffer()
+        if self.sensor_buffer is None:
+            return np.zeros(self.base_dim, dtype=self.dtype), None
+
+        if hasattr(self.sensor_buffer, "get_latest_with_sequence"):
+            value, sequence = self.sensor_buffer.get_latest_with_sequence()
+        else:
+            value = self.sensor_buffer.get_latest()
+            sequence = None
+        return self._process_values(value), sequence
+
+    def reset(self) -> None:
+        super().reset()
+        self._last_sensor_sequence = None
+
+    def prime(self, context: ObservationContext) -> None:
+        current, sequence = self._current_with_sequence(context)
+        self.buffer[:] = current
+        self._last_sensor_sequence = sequence
+
     def update(self, context: ObservationContext) -> None:
-        current = self._compute_processed_current_obs(context)
-        if self.history_len > 1 and np.array_equal(current, self.buffer[-1]):
+        current, sequence = self._current_with_sequence(context)
+        if sequence is not None:
+            if sequence == 0 or sequence == self._last_sensor_sequence:
+                return
+            if (
+                self._last_sensor_sequence is not None
+                and sequence > self._last_sensor_sequence
+                and sequence - self._last_sensor_sequence < self.history_skip_frames
+            ):
+                return
+            self._last_sensor_sequence = sequence
+        elif self.history_len > 1 and np.array_equal(current, self.buffer[-1]):
             return
         if self.history_len > 1:
             self.buffer[:-1] = self.buffer[1:]

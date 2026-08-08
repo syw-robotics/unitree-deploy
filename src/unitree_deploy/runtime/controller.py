@@ -15,6 +15,7 @@ from unitree_deploy.config.defaults import (
     LOWCMD_TOPIC,
     LOWSTATE_TOPIC,
     RUN_POLICY_STATE,
+    SIM_RESET_SEQUENCE_RESERVE_INDEX,
     WIRELESS_REMOTE_BUTTON_BITS,
     sim_key_for_button,
 )
@@ -137,6 +138,8 @@ class Controller:
         self.alive = True
         self.cleanup_done = False
         self.has_low_state = False
+        self.sim_reset_sequence: int | None = None
+        self.policy_reset_pending = False
         self.mode_machine = 0
         self.mode_pr = 0
         self.state = DAMPING_STATE
@@ -201,8 +204,17 @@ class Controller:
 
     # ----- DDS input and controller state snapshot -----
 
+    def observe_sim_reset_sequence(self, reset_sequence: int) -> None:
+        if self.sim_reset_sequence is not None and reset_sequence != self.sim_reset_sequence:
+            self.policy_reset_pending = True
+        self.sim_reset_sequence = reset_sequence
+
     def on_lowstate(self, msg: LowState_) -> None:
         with self.lock:
+            if self.config.mode == "sim":
+                reset_sequence = int(msg.reserve[SIM_RESET_SEQUENCE_RESERVE_INDEX])
+                self.observe_sim_reset_sequence(reset_sequence)
+
             self.mode_machine = int(msg.mode_machine)
             self.mode_pr = int(msg.mode_pr)
 
@@ -235,6 +247,17 @@ class Controller:
     def button_pressed(self, name: str) -> bool:
         with self.lock:
             return self.remote.button_pressed(name)
+
+    def reset_policy_if_requested(self) -> bool:
+        with self.lock:
+            if not self.policy_reset_pending:
+                return False
+            self.policy_reset_pending = False
+            policy = self.active_profile.policy
+
+        policy.reset()
+        log("policy state reset after simulation reset")
+        return True
 
     def transition(self, state: str, *, force: bool = False) -> None:
         self.state_machine.transition(state, force=force)
@@ -348,6 +371,8 @@ class Controller:
     # ----- State dispatch -----
 
     def step(self) -> None:
+        self.reset_policy_if_requested()
+
         if self.policy_manager.switch.enabled and self.button_pressed(self.policy_manager.switch.button):
             self.switch_to_next_policy()
             return
@@ -380,7 +405,7 @@ class Controller:
             log(
                 f"sim keymap: {sim_key_for_button('A')} -> A, "
                 f"{sim_key_for_button('Start')} -> Start, "
-                f"{sim_key_for_button('X')} -> Damping{switch_hint}, R -> reset sim"
+                f"{sim_key_for_button('X')} -> Damping{switch_hint}, R -> reset sim + policy"
             )
         control_hint = (
             "A: damping/policy -> default pose, "

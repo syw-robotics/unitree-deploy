@@ -13,6 +13,11 @@ LOWCMD_HZ = 500
 STATE_HZ = 200
 RENDER_HZ = 30
 
+# SimBridge publishes its reset generation in LowState.reserve so the separate
+# controller process can reset recurrent policy state at the same boundary.
+SIM_RESET_SEQUENCE_RESERVE_INDEX = 0
+SIM_RESET_SEQUENCE_MODULUS = 1 << 32
+
 BASE_HEIGHT = 1.0
 BASE_QUAT = (0.0, 0.0, 0.0, 1.0)
 

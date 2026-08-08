@@ -1,0 +1,28 @@
+# Press P once to enable one random pattern from this list; press P again to stop.
+# To test one fixed corruption type, leave only that type in patterns.
+depth_corruption:
+  enabled: true
+  key: p
+  patterns: [local_reflection, patch_mask, mask_zero, gaussian_noise]
+  seed: 0
+  output_range: [0.0, 1.0]
+
+  local_reflection:
+    # Per camera frame; 0.05 is about one affected frame per second at 20 Hz.
+    frame_probability: 0.05
+    patch_count_range: [1, 2]
+    height_range: [3, 8]
+    width_range: [4, 12]
+    value_choices: [0.0, 1.0]
+
+  # Matches vision_parkour_lab DepthDropoutNoiseModel strong-artifacts settings.
+  patch_mask:
+    artifacts_prob: 0.01
+    max_blocks: 3
+    height_mean_std: [8.0, 2.0]
+    width_mean_std: [8.0, 2.0]
+    value_choices: [0.0, 1.0]
+
+  gaussian_noise:
+    mean: 0.0
+    std: 0.5

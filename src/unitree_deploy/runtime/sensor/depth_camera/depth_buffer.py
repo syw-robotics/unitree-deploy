@@ -11,7 +11,7 @@ from unitree_deploy.runtime.sensor.array_buffer import SharedArrayObservationBuf
 class DepthObservationBuffer:
     """Thread-safe buffer for async depth image updates.
 
-    Camera thread writes at ~10Hz, policy thread reads at ~50Hz.
+    The camera thread writes more slowly than the policy thread reads.
     """
 
     def __init__(self, height: int, width: int) -> None:
@@ -20,6 +20,7 @@ class DepthObservationBuffer:
         self._buffer = np.zeros((height, width), dtype=np.float32)
         self._lock = threading.Lock()
         self._timestamp = 0.0
+        self._sequence = 0
 
     def update(self, depth_image: np.ndarray) -> None:
         """Update buffer with new depth image (called by camera thread)."""
@@ -31,11 +32,16 @@ class DepthObservationBuffer:
         with self._lock:
             self._buffer[:] = depth_image
             self._timestamp = time.time()
+            self._sequence += 1
 
     def get_latest(self) -> np.ndarray:
         """Get latest depth image (called by policy thread)."""
+        return self.get_latest_with_sequence()[0]
+
+    def get_latest_with_sequence(self) -> tuple[np.ndarray, int]:
+        """Get a consistent image and its completed-frame sequence."""
         with self._lock:
-            return self._buffer.copy()
+            return self._buffer.copy(), self._sequence
 
     def get_timestamp(self) -> float:
         """Get timestamp of last update."""
@@ -62,6 +68,7 @@ class SharedDepthObservationBuffer(SharedArrayObservationBuffer):
             shape=(self.height, self.width),
             create=create,
             owner=owner,
+            sequenced=True,
         )
 
     @classmethod
@@ -86,7 +93,7 @@ class SharedDepthObservationBuffer(SharedArrayObservationBuffer):
         super().update(depth_image)
 
     def get_latest(self) -> np.ndarray:
-        return self._buffer.copy()
+        return super().get_latest()
 
     def get_timestamp(self) -> float:
         return 0.0

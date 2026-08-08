@@ -119,6 +119,13 @@ class MujocoDepthCamera(DepthCameraBase):
             raise ValueError("camera.intrinsics.render_scale must be >= 1")
         self.render_height = self.height * self.render_scale
         self.render_width = self.width * self.render_scale
+        if not 0.0 < self.near < self.far:
+            raise ValueError("camera.intrinsics must satisfy 0 < near < far")
+        model_extent = float(self.mj_model.stat.extent)
+        if model_extent <= 0.0:
+            raise ValueError("MuJoCo model extent must be positive")
+        self._render_znear = self.near / model_extent
+        self._render_zfar = self.far / model_extent
         self._renderer = None
 
     @staticmethod
@@ -175,8 +182,21 @@ class MujocoDepthCamera(DepthCameraBase):
             self._renderer = mujoco.Renderer(self.mj_model, self.render_height, self.render_width)
             self._renderer.enable_depth_rendering()
 
-        self._renderer.update_scene(self.mj_data, camera=self.camera_name)
-        return self._match_training_intrinsics(self._renderer.render())
+        # MuJoCo stores clip planes as fractions of model extent. Large parkour
+        # scenes otherwise move the default near plane far enough to hide close
+        # obstacle faces. Apply sensor-local planes only for this render so the
+        # main viewer keeps its own scene-scale clipping range.
+        original_znear = float(self.mj_model.vis.map.znear)
+        original_zfar = float(self.mj_model.vis.map.zfar)
+        try:
+            self.mj_model.vis.map.znear = self._render_znear
+            self.mj_model.vis.map.zfar = self._render_zfar
+            self._renderer.update_scene(self.mj_data, camera=self.camera_name)
+            depth = self._renderer.render()
+        finally:
+            self.mj_model.vis.map.znear = original_znear
+            self.mj_model.vis.map.zfar = original_zfar
+        return self._match_training_intrinsics(depth)
 
     def close(self) -> None:
         """Release MuJoCo renderer resources."""

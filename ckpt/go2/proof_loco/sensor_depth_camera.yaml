@@ -9,13 +9,14 @@ camera:
   attach_body: base_link
   shared_memory_name: unitree_depth_go2_perceptive_locomotion
 
-  # Update rate (Hz)
-  update_rate: 10.0
+  # Training camera update_period=0.05 s (20 Hz).
+  update_rate: 20.0
 
   # Camera pose relative to base_link. This is the MuJoCo/OpenGL equivalent of
   # the training Isaac config rot=quat_from_euler_xyz_tuple([180, 60, -90]), convention="ros".
   transform:
     position: [0.335, 0.015, 0.088]
+    # position: [0.330, 0.015, 0.088]
     rpy: [60.0, 0.0, -90.0]
     degrees: true
 
@@ -43,3 +44,6 @@ camera:
     clip_range: [0.1, 2.0]
     normalize_mode: "clip_scale"  # (value - clip_min) / (clip_max - clip_min)
     fill_invalid: 2.0
+
+  # Runtime-only OOD robustness testing, applied after depth normalization.
+  ood_injection: depth_corruption.yaml

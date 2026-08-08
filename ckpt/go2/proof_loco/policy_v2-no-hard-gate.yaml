@@ -18,8 +18,8 @@ gate_control:
   value: 1.0
 
 gate_plot:
-  # enabled: true
-  enabled: false
+  enabled: true
+  # enabled: false
   backend: TkAgg
   history: 500
   update_interval: 5
@@ -91,6 +91,7 @@ observations:
     params:
       height: 23
       width: 44
+      history_skip_frames: 2
       shared_memory_name: unitree_depth_go2_perceptive_locomotion
 
 action_dim: 12

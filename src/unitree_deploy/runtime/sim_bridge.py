@@ -29,6 +29,8 @@ from unitree_deploy.config.defaults import (
     ODOM_TOPIC,
     RENDER_HZ,
     SIM_HZ,
+    SIM_RESET_SEQUENCE_MODULUS,
+    SIM_RESET_SEQUENCE_RESERVE_INDEX,
     SIM_REMOTE_BUTTON_KEYS,
     STATE_HZ,
 )
@@ -58,6 +60,10 @@ from unitree_deploy.utils.viewer_backend import create_viewer_backend
 from unitree_deploy.runtime.sensor.depth_camera.depth_camera import MujocoDepthCamera
 from unitree_deploy.runtime.sensor.depth_camera.depth_buffer import SharedDepthObservationBuffer
 from unitree_deploy.runtime.sensor.depth_camera.depth_preview import DepthPreviewConfig, DepthPreviewWindow
+from unitree_deploy.runtime.sensor.depth_camera.depth_ood import (
+    DepthOODInjector,
+    load_depth_ood_config,
+)
 from unitree_deploy.runtime.sensor.depth_camera.config import (
     camera_shared_memory_name,
     load_sensor_camera_config,
@@ -188,6 +194,9 @@ class SimBridge:
         self.command_received = False
         self.simulation_paused = True
         self.tick = 1
+        self.reset_sequence = 0
+        self.published_reset_sequence = 0
+        self.depth_reset_pending = False
         self.mode_machine = 0
         self.mode_pr = 0
         self.keyboard = KeyboardState()
@@ -228,7 +237,7 @@ class SimBridge:
 
         self.initial_qpos = self.make_initial_qpos()
         self.initial_joint_qpos = self.initial_qpos[self.motor_qposadr].copy()
-        self.reset_sim(print_log=False)
+        self.reset_sim(print_log=False, notify_policy=False)
 
         self.target_q = self.initial_joint_qpos.copy()
         self.target_dq = np.zeros(self.num_motor, dtype=np.float64)
@@ -274,6 +283,7 @@ class SimBridge:
         self.depth_camera = None
         self.depth_buffer = None
         self.depth_preview = None
+        self.depth_ood = None
         self.height_scan = None
         self.height_scan_buffer = None
         self.height_scan_visualization_enabled = False
@@ -281,6 +291,9 @@ class SimBridge:
         self.height_scan_visualization_rgba = (0.1, 0.75, 1.0, 0.9)
         self._init_depth_camera()
         self._init_height_scan()
+        if self.depth_camera is None:
+            self.published_reset_sequence = self.reset_sequence
+            self.depth_reset_pending = False
 
         self.state_thread = threading.Thread(target=self.publish_state_loop, daemon=False)
 
@@ -333,6 +346,13 @@ class SimBridge:
             crop=crop,
             gaussian_blur=preprocessing.get("gaussian_blur"),
         )
+        depth_ood_config = load_depth_ood_config(
+            camera_config.get("ood_injection"),
+            sensor_yaml_path=self.sensor_yaml_path,
+        )
+        depth_ood = DepthOODInjector(depth_ood_config)
+        if depth_ood.enabled:
+            self.depth_ood = depth_ood
         if self.config.depth_preview:
             preview_config = camera_config.get("preview", {})
             if preview_config is None:
@@ -490,7 +510,13 @@ class SimBridge:
             anchors[i, 2] += BAND_CLEARANCE
         return anchors
 
-    def reset_sim(self, print_log: bool = True) -> None:
+    def reset_sim(self, print_log: bool = True, *, notify_policy: bool = True) -> None:
+        if notify_policy:
+            self.reset_sequence = (self.reset_sequence + 1) % SIM_RESET_SEQUENCE_MODULUS
+            self.depth_reset_pending = True
+            if hasattr(self, "depth_camera") and self.depth_camera is None:
+                self.published_reset_sequence = self.reset_sequence
+                self.depth_reset_pending = False
         mujoco.mj_resetData(self.model, self.data)
         self.data.qpos[:] = self.initial_qpos
         self.data.qvel[:] = 0.0
@@ -543,6 +569,9 @@ class SimBridge:
             self.move_band(-BAND_STEP)
         elif key == "n":
             self.toggle_band()
+        elif self.depth_ood is not None and key == self.depth_ood.key:
+            mode = self.depth_ood.toggle_random()
+            log(f"depth OOD mode -> {mode}")
         elif key == "r":
             with self.lock:
                 self.reset_sim()
@@ -653,6 +682,7 @@ class SimBridge:
             qvel = self.data.qvel.copy()
             ctrl = self.data.ctrl[: self.num_motor].copy()
             sensordata = self.data.sensordata.copy()
+            reset_sequence = self.published_reset_sequence
 
         gyro = qvel[3:6]
         if self.imu_gyro is not None:
@@ -664,7 +694,7 @@ class SimBridge:
             acc_adr, dim = self.imu_acc
             if dim >= 3:
                 acc = sensordata[acc_adr : acc_adr + 3]
-        return qpos, qvel, ctrl, gyro, acc
+        return qpos, qvel, ctrl, gyro, acc, reset_sequence
 
     @staticmethod
     def fill_imu(msg, quat, gyro, acc) -> None:
@@ -674,11 +704,12 @@ class SimBridge:
         if hasattr(msg.imu_state, "rpy"):
             msg.imu_state.rpy = quat_to_rpy(quat)
 
-    def make_lowstate(self, qpos, qvel, ctrl, gyro, acc) -> LowState_:
+    def make_lowstate(self, qpos, qvel, ctrl, gyro, acc, reset_sequence: int) -> LowState_:
         msg = unitree_hg_msg_dds__LowState_()
         msg.mode_pr = int(self.mode_pr)
         msg.mode_machine = int(self.mode_machine)
         msg.tick = int(self.tick)
+        msg.reserve[SIM_RESET_SEQUENCE_RESERVE_INDEX] = int(reset_sequence)
 
         for i in range(self.num_motor):
             msg.motor_state[i].q = float(qpos[self.motor_qposadr[i]])
@@ -702,8 +733,8 @@ class SimBridge:
     def publish_state_loop(self) -> None:
         timer = LoopTimer(STATE_HZ)
         while self.alive:
-            qpos, qvel, ctrl, gyro, acc = self.state_snapshot()
-            self.lowstate_pub.Write(self.make_lowstate(qpos, qvel, ctrl, gyro, acc))
+            qpos, qvel, ctrl, gyro, acc, reset_sequence = self.state_snapshot()
+            self.lowstate_pub.Write(self.make_lowstate(qpos, qvel, ctrl, gyro, acc, reset_sequence))
             self.odom_pub.Write(self.make_odom(qpos, qvel, gyro, acc))
             timer.sleep()
 
@@ -734,7 +765,12 @@ class SimBridge:
 
         def update_depth_frame() -> None:
             depth_image = self.depth_camera.capture()
+            if self.depth_ood is not None:
+                depth_image = self.depth_ood.apply(depth_image)
             self.depth_buffer.update(depth_image)
+            if self.depth_reset_pending:
+                self.published_reset_sequence = self.reset_sequence
+                self.depth_reset_pending = False
             if self.depth_preview is not None:
                 self.depth_preview.show(depth_image)
 
@@ -758,18 +794,25 @@ class SimBridge:
                     mujoco.mj_step(self.model, self.data)
 
                     # Update depth camera at the sensor-configured camera rate.
-                    if self.depth_camera and steps % depth_update_interval == 0:
+                    if self.depth_camera and (
+                        self.depth_reset_pending or steps % depth_update_interval == 0
+                    ):
                         update_depth_frame()
                         last_depth_update = now
                     if self.height_scan and steps % height_scan_update_interval == 0:
                         update_height_scan()
                         last_height_scan_update = now
             elif (
-                (self.depth_camera and now - last_depth_update >= depth_update_dt)
+                (
+                    self.depth_camera
+                    and (self.depth_reset_pending or now - last_depth_update >= depth_update_dt)
+                )
                 or (self.height_scan and now - last_height_scan_update >= height_scan_update_dt)
             ):
                 with self.lock:
-                    if self.depth_camera and now - last_depth_update >= depth_update_dt:
+                    if self.depth_camera and (
+                        self.depth_reset_pending or now - last_depth_update >= depth_update_dt
+                    ):
                         update_depth_frame()
                         last_depth_update = now
                     if self.height_scan and now - last_height_scan_update >= height_scan_update_dt:
@@ -783,12 +826,23 @@ class SimBridge:
             if not self.simulation_paused:
                 steps += 1
             if now - last_log >= 1.0:
+                depth_ood_status = []
+                if self.depth_ood is not None:
+                    depth_ood_mode = self.depth_ood.mode
+                    depth_ood_status.append(
+                        (
+                            "depth_ood",
+                            depth_ood_mode,
+                            "green" if depth_ood_mode == "off" else "red",
+                        )
+                    )
                 if self.simulation_paused:
                     status(
                         [
                             ("state", "paused", "yellow"),
                             ("hint", "press space", "white"),
                             ("band", "on" if self.band_on else "off", "green" if self.band_on else "red"),
+                            *depth_ood_status,
                         ]
                     )
                 else:
@@ -801,6 +855,7 @@ class SimBridge:
                             ("remote", f"{command[0]:+.2f} {command[1]:+.2f} {command[2]:+.2f}", "white"),
                             ("cmd", "yes" if self.command_received else "no", "green" if self.command_received else "yellow"),
                             ("band", "on" if self.band_on else "off", "green" if self.band_on else "red"),
+                            *depth_ood_status,
                         ]
                     )
                 last_log = now
@@ -826,6 +881,11 @@ class SimBridge:
                 f"attach_body={self.camera_config.get('attach_body', 'base_link')} "
                 f"pos={position} rpy={rpy}"
             )
+            if self.depth_ood is not None and self.depth_ood.enabled:
+                log(
+                    f'depth OOD injection: press "{self.depth_ood.key}" to toggle; patterns='
+                    + ",".join(self.depth_ood.patterns)
+                )
         if self.height_scan_config is not None:
             grid = self.height_scan_config.get("grid", {})
             log(

@@ -16,7 +16,8 @@ class _GatePlotter:
         self.history = max(2, int(history))
         self.update_interval = max(1, int(update_interval))
         self.dt = float(dt)
-        self.values: deque[float] = deque(maxlen=self.history)
+        self.scores: deque[float] = deque(maxlen=self.history)
+        self.gates: deque[float] = deque(maxlen=self.history)
         self.step = 0
         self.enabled = True
         try:
@@ -36,31 +37,34 @@ class _GatePlotter:
                 )
             plt.ion()
             self.fig, self.ax = plt.subplots(num="proof_loco gate")
-            (self.line,) = self.ax.plot([], [], linewidth=1.6)
-            self.ax.set_title("Final gate")
+            (self.score_line,) = self.ax.plot([], [], linewidth=1.6, label="smoothed score")
+            (self.gate_line,) = self.ax.plot([], [], linewidth=1.3, label="hard gate")
+            self.ax.set_title("Policy gate")
             self.ax.set_xlabel("time [s]")
             self.ax.set_ylabel("gate")
             self.ax.set_ylim(-0.05, 1.05)
             self.ax.grid(True, alpha=0.25)
+            self.ax.legend(loc="lower right")
             self.fig.tight_layout()
             self.fig.show()
         except Exception as exc:
             self.enabled = False
             print(f"[WARN] gate plot disabled: {exc}")
 
-    def update(self, gate: np.ndarray) -> None:
+    def update(self, score: np.ndarray, gate: np.ndarray) -> None:
         if not self.enabled:
             return
-        self.values.append(float(np.asarray(gate).reshape(-1)[0]))
+        self.scores.append(float(np.asarray(score).reshape(-1)[0]))
+        self.gates.append(float(np.asarray(gate).reshape(-1)[0]))
         self.step += 1
         if self.step % self.update_interval != 0:
             return
 
-        count = len(self.values)
+        count = len(self.gates)
         x0 = max(0, self.step - count) * self.dt
         xs = x0 + np.arange(count, dtype=np.float32) * self.dt
-        ys = np.asarray(self.values, dtype=np.float32)
-        self.line.set_data(xs, ys)
+        self.score_line.set_data(xs, np.asarray(self.scores, dtype=np.float32))
+        self.gate_line.set_data(xs, np.asarray(self.gates, dtype=np.float32))
         self.ax.set_xlim(float(xs[0]) if count > 1 else 0.0, float(xs[-1] + self.dt))
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
@@ -91,6 +95,11 @@ class DepthRecurrentPolicy(BasePolicy):
         self.gate_control_mode = str(gate_control.get("mode", "policy")).strip().lower()
         if self.gate_control_mode not in ("policy", "manual"):
             raise ValueError("gate_control.mode must be 'policy' or 'manual'")
+        self.gate_initial_open = bool(gate_control.get("initial_open", False))
+        self.gate_update_decimation = int(gate_control.get("decimation", 1))
+        if self.gate_update_decimation < 1:
+            raise ValueError("gate_control.decimation must be at least 1")
+        self.gate_update_step = 0
 
         actor_path_key = "policy_path" if self.gate_control_mode == "policy" else "manual_path"
         actor_path_value = gate_control.get(actor_path_key)
@@ -108,6 +117,17 @@ class DepthRecurrentPolicy(BasePolicy):
             self.model_path = selected_actor_path
 
         self.actor_session = self.session
+        self.gate_hold_session = None
+        if self.gate_control_mode == "policy" and self.gate_update_decimation > 1:
+            manual_path_value = gate_control.get("manual_path")
+            if manual_path_value is None:
+                raise KeyError("gate_control.manual_path is required when gate decimation is greater than 1")
+            manual_path = (self.policy_yaml_path.parent / manual_path_value).resolve()
+            self.gate_hold_session = ort.InferenceSession(
+                str(manual_path),
+                sess_options=options,
+                providers=session_providers,
+            )
         self.encoder_path = (self.policy_yaml_path.parent / self.config["depth_encoder_path"]).resolve()
         self.encoder_session = ort.InferenceSession(
             str(self.encoder_path),
@@ -149,6 +169,7 @@ class DepthRecurrentPolicy(BasePolicy):
             if "gate_open_in" in actor_inputs:
                 self.gate_open_state = self._zeros_for_input(actor_inputs, "gate_open_in")
             self.last_gate = np.zeros_like(self.gate_state)
+            self._reset_policy_gate_state()
         else:
             self.manual_gate = self._constant_for_input(
                 actor_inputs,
@@ -204,19 +225,31 @@ class DepthRecurrentPolicy(BasePolicy):
             ) from exc
         return target
 
+    def _reset_policy_gate_state(self) -> None:
+        initial_value = 1.0 if self.gate_initial_open else 0.0
+        self.gate_state.fill(initial_value)
+        self.gate_valid.fill(initial_value)
+        if self.gate_open_state is not None:
+            self.gate_open_state.fill(self.gate_initial_open)
+        self.last_gate.fill(initial_value)
+
+    def _update_policy_gate_this_step(self) -> bool:
+        self.gate_update_step += 1
+        if self.gate_update_step < self.gate_update_decimation:
+            return False
+        self.gate_update_step = 0
+        return True
+
     def reset(self) -> None:
         super().reset()
         self.h_state.fill(0.0)
+        self.gate_update_step = 0
         if self.c_state is not None:
             self.c_state.fill(0.0)
-        if self.gate_state is not None:
-            self.gate_state.fill(0.0)
-        if self.gate_valid is not None:
-            self.gate_valid.fill(0.0)
-        if self.gate_open_state is not None:
-            self.gate_open_state.fill(False)
         if self.manual_gate is not None:
             self.last_gate[:] = self.manual_gate
+        else:
+            self._reset_policy_gate_state()
 
     def compute_target_q(self, context: ObservationContext) -> np.ndarray:
         if self._observation_needs_prime:
@@ -247,7 +280,11 @@ class DepthRecurrentPolicy(BasePolicy):
         if self.c_state is not None:
             actor_inputs["c_in"] = self.c_state
             output_names.append("c_out")
-        if self.gate_control_mode == "policy":
+        update_policy_gate = (
+            self.gate_control_mode == "policy" and self._update_policy_gate_this_step()
+        )
+        if update_policy_gate:
+            inference_session = self.actor_session
             actor_inputs["gate_in"] = self.gate_state
             actor_inputs["gate_valid_in"] = self.gate_valid
             output_names.extend(["gate_out", "gate_valid_out"])
@@ -255,10 +292,18 @@ class DepthRecurrentPolicy(BasePolicy):
                 actor_inputs["gate_open_in"] = self.gate_open_state
                 output_names.append("gate_open_out")
         else:
-            actor_inputs["gate"] = self.manual_gate
+            inference_session = (
+                self.gate_hold_session
+                if self.gate_control_mode == "policy"
+                else self.actor_session
+            )
+            held_gate = (
+                self.last_gate if self.gate_control_mode == "policy" else self.manual_gate
+            )
+            actor_inputs["gate"] = held_gate
             output_names.append("gate_out")
 
-        outputs = self.actor_session.run(output_names, actor_inputs)
+        outputs = inference_session.run(output_names, actor_inputs)
         output_index = 0
         policy_action = np.asarray(outputs[output_index], dtype=np.float32).reshape(-1)
         output_index += 1
@@ -267,7 +312,7 @@ class DepthRecurrentPolicy(BasePolicy):
         if self.c_state is not None:
             self.c_state[:] = outputs[output_index]
             output_index += 1
-        if self.gate_control_mode == "policy":
+        if update_policy_gate:
             self.gate_state[:] = outputs[output_index]
             self.gate_valid[:] = outputs[output_index + 1]
             if self.gate_open_state is not None:
@@ -278,6 +323,7 @@ class DepthRecurrentPolicy(BasePolicy):
         else:
             self.last_gate[:] = outputs[output_index]
         if self.gate_plotter is not None:
-            self.gate_plotter.update(self.last_gate)
+            score = self.gate_state if self.gate_state is not None else self.last_gate
+            self.gate_plotter.update(score, self.last_gate)
 
         return self._target_q_from_policy_action(policy_action, context)
