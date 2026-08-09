@@ -21,8 +21,8 @@ gate_control:
   value: 1.0
 
 gate_plot:
-  enabled: true
-  # enabled: false
+  # enabled: true
+  enabled: false
   backend: TkAgg
   history: 500
   update_interval: 5
@@ -78,9 +78,9 @@ observations:
   - type: command
     history_len: 10
     command_range:
-      - [0.0, 1.1]
+      - [0.0, 1.0]
       - [-0.5, 0.5]
-      - [-1.5, 1.5]
+      - [-1.2, 1.2]
   - type: joint_pos_rel
     history_len: 10
   - type: joint_vel
@@ -98,7 +98,7 @@ observations:
       shared_memory_name: unitree_depth_go2_perceptive_locomotion
 
 action_dim: 12
-raw_action_clip: null
+raw_action_clip: 10.0
 target_q_clip: [-100.0, 100.0]
 max_torque: 30.0
 # MuJoCo already saturates actuator torque at every 500 Hz physics step.
